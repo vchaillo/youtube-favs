@@ -31,6 +31,7 @@ function legacyState() {
 let filter = {query:'',category:'all',status:'all',sort:'newest',show:'all'};
 let lastRoute = '';
 let toastTimer;
+let loadingTimer;
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
 const modalContent = document.querySelector('#modalContent');
@@ -311,19 +312,28 @@ document.addEventListener('submit',event=>{
 modal.addEventListener('close',()=>{modalContent.innerHTML='';});
 modal.addEventListener('click',event=>{if(event.target===modal){const box=modal.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeModal();}});
 window.addEventListener('hashchange',()=>{render();window.scrollTo({top:0,behavior:'instant'});});
+function armLoadingTimeout() {
+  clearTimeout(loadingTimer);
+  if(cloudStatus.phase!=='loading')return;
+  loadingTimer=setTimeout(()=>{
+    if(cloudStatus.phase==='loading'){
+      cloudStatus.phase='error';cloudStatus.message='Le chargement prend plus de temps que prévu. Vérifiez votre connexion puis réessayez.';render();
+    }
+  },25000);
+}
 window.addEventListener('youtube-favs:auth',event=>{
   closeModal();
   state=initialState();lastSaved=privateModel.empty();
   cloudStatus={phase:event.detail.status,user:event.detail.user,message:event.detail.message||'',sync:'ready'};
   filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute='';
-  applyPreferences();render();
+  applyPreferences();render();armLoadingTimeout();
 });
 window.addEventListener('youtube-favs:data',event=>{
   if(event.detail.uid!==cloudStatus.user?.uid)return;
   state=privateModel.hydrate(event.detail.data,catalogue);
   lastSaved=privateModel.pack(state,catalogue);
   cloudStatus.phase='ready';cloudStatus.message='';
-  applyPreferences();render();
+  clearTimeout(loadingTimer);applyPreferences();render();
 });
 window.addEventListener('youtube-favs:sync',event=>{
   if(event.detail.uid!==cloudStatus.user?.uid)return;
@@ -332,10 +342,6 @@ window.addEventListener('youtube-favs:sync',event=>{
   else accountChrome();
 });
 window.addEventListener('youtube-favs:login-error',event=>{cloudStatus.message=event.detail.message;render();});
-setTimeout(()=>{
-  if(cloudStatus.phase==='loading'){
-    cloudStatus.phase='error';cloudStatus.message='Le chargement prend plus de temps que prévu. Vérifiez votre connexion puis réessayez.';render();
-  }
-},25000);
+armLoadingTimeout();
 if(!location.hash)history.replaceState(null,'','#/explore');
 render();

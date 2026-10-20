@@ -24,7 +24,7 @@ test('parallel device changes merge instead of replacing another device selectio
 });
 
 test('malformed records and unsafe source URLs do not reach the UI',()=>{
-  const payload=model.sanitize({favorites:[videoA,videoA,'wrong'],following:['papy','../../alice'],shows:[{id:'bad',name:'Bad',channel:'X',mode:'channel',source:'javascript:alert(1)'}],accent:'url(evil)',episodes:[{id:videoA,showId:'papy',title:'Valid'}]});
+  const payload=model.sanitize({favorites:[videoA,videoA,'wrong'],following:['papy','../../alice'],shows:[{id:'bad',name:'Bad',channel:'X',mode:'channel',source:'javascript:alert(1)'},{name:'Missing ID',channel:'X',mode:'channel',source:'https://youtube.com/@example'}],accent:'url(evil)',episodes:[{id:videoA,showId:'papy',title:'Valid'}]});
   assert.deepEqual(payload.favorites,[videoA]);assert.deepEqual(payload.following,['papy']);
   assert.equal(payload.shows.length,0);assert.equal(payload.accent,'#f15a61');
   assert.equal(payload.episodes.length,1);
