@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function validState() {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+          'schemaVersion', 'following', 'favorites', 'watched', 'queue',
+          'shows', 'episodes', 'view', 'accent', 'theme', 'revision', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'schemaVersion', 'following', 'favorites', 'watched', 'queue',
+          'shows', 'episodes', 'view', 'accent', 'theme', 'revision', 'updatedAt'
+        ])
+        && data.schemaVersion == 1
+        && data.following is list && data.following.size() <= 1000
+        && data.favorites is list && data.favorites.size() <= 5000
+        && data.watched is list && data.watched.size() <= 5000
+        && data.queue is list && data.queue.size() <= 5000
+        && data.shows is list && data.shows.size() <= 200
+        && data.episodes is list && data.episodes.size() <= 1000
+        && data.view in ['grid', 'list']
+        && data.theme in ['dark', 'light']
+        && data.accent is string && data.accent.matches('^#[a-fA-F0-9]{6}$')
+        && data.revision is int && data.revision >= 0
+        && data.updatedAt == request.time;
+    }
+    match /users/{uid}/app/state {
+      allow get: if owns(uid);
+      allow create: if owns(uid) && validState() && request.resource.data.revision == 0;
+      allow update: if owns(uid) && validState()
+        && request.resource.data.revision == resource.data.revision + 1;
+      allow delete: if owns(uid);
+    }
+    // All other document paths and collection queries are denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

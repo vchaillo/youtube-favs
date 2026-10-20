@@ -2,7 +2,7 @@
 
 A personal YouTube show library: follow specific programs instead of entire channels.
 
-## Prototype features
+## Features
 
 - Dark interface inspired by Movie Quest, red accent, responsive gallery and list views.
 - A one-time public catalogue import covering five selections and 189 real videos.
@@ -12,7 +12,10 @@ A personal YouTube show library: follow specific programs instead of entire chan
 - Embedded YouTube player loaded only after an explicit click, plus a permanent YouTube fallback link.
 - Add shows with channel/keyword or playlist rules; manually add videos by URL.
 - Light/dark themes and accent preferences.
-- Automatic local-state migration: retain favorites, watched state, watchlists, custom shows and existing follow choices when the bundled catalogue changes.
+- Google sign-in, account photo and per-user Firestore state.
+- No forced follows: Explorer contains the shared catalogue; My follows and the episode feed contain only the signed-in user’s selections.
+- Explicit legacy-demo import into the selected Google account.
+- Transactional delta updates preserve independent edits made on different devices.
 
 ## Run locally
 
@@ -22,7 +25,7 @@ Serve this directory with any static HTTP server, for example:
 python3 -m http.server 8000
 ```
 
-Open `http://localhost:8000`. No build step, dependencies or API key are required.
+Open `http://localhost:8000`. No build step is required for the frontend. Firebase SDK modules are imported from the official Google CDN; development dependencies are used only for validation and the security emulator. The production Firebase Web configuration is in `firebase-app.mjs`.
 
 ## GitHub Pages
 
@@ -30,9 +33,21 @@ Select **GitHub Actions** as the publishing source in **Settings → Pages**. Th
 All application URLs are relative and navigation uses hashes, so project Pages subpaths and page refreshes work without rewrite rules.
 Expected project URL: https://vchaillo.github.io/youtube-favs/
 
-## Data and limitations
+## Firebase setup and private data
 
-This version does not authenticate users or contact the YouTube Data API. `localStorage` holds only this browser's preferences and selections, under `youtube-favs:v1`; the reset action affects that key only. Clearing browser data removes the prototype state. Other devices do not share it.
+Read [FIREBASE_SETUP.md](FIREBASE_SETUP.md) and publish [firestore.rules](firestore.rules) before using the cloud library.
+
+Firebase Authentication handles Google sign-in. Each account stores its private selections, custom records and preferences in the exact document `users/{uid}/app/state`. The rules grant access only to that UID, validate the schema and require monotonically increasing revisions and server timestamps. All other paths and collection queries are denied.
+
+The public catalogue stays in `data/catalog.js`; it is not copied into each account. Custom channel/show rules and manually added episodes are account-private. New users start with no follows, favorites or watched state. Catalogue updates never automatically subscribe a user.
+
+Firestore uses an in-memory cache. No new application state is written to localStorage, and no local-only fallback is enabled on cloud failure. The Authentication SDK can retain its sign-in session in browser storage. The old unowned demo key `youtube-favs:v1` is read only to offer an explicit profile import. That key is removed only after a confirmed successful import into the selected account. Failed or cancelled imports preserve it.
+
+Account transitions unsubscribe listeners, cancel queued writes and clear the previous account’s application state and player immediately. Write callbacks capture their original UID and document path; they never retarget a different account. Transactions merge list additions/removals and custom-record changes rather than overwriting the entire remote state with a stale snapshot. Permission and network failures show an explicit retry screen.
+
+Resetting the library clears only the signed-in account’s selections, custom records and preferences. It does not delete the shared catalogue or the Google/Firebase account.
+
+The YouTube Data API and its private-key backend remain a separate integration. No YouTube API key is included in this repository.
 
 ## Imported catalogue — 20 October 2026
 
@@ -58,17 +73,21 @@ Thumbnail requests go to `i.ytimg.com`. The YouTube iframe is created only when 
 ```sh
 node --check app.js
 node --check data/catalog.js
-node --test tests/app.test.cjs
+node --check cloud-state.js
+node --check firebase-app.mjs
+npm ci --ignore-scripts
+npm test
+npm run test:rules
 ```
 
-Tests cover catalogue integrity, routing, filters, persistence, legacy-state migration, URL validation, manual show creation and deferred player loading. They do not verify actual YouTube playback or replace visual browser QA.
+Tests cover catalogue navigation, user-specific filtering, account changes, explicit legacy import, URL validation, manual records, deferred player loading, concurrent saves, stale callbacks and cloud failures. Firestore emulator tests prove owner-only reads/writes, rejection of anonymous and cross-account requests, validation and revision checks. They do not complete a real Google sign-in, verify live Firestore rules or replace visual browser QA. Emulator commands always use the isolated demo project `demo-youtube-favs`.
 
 ## Next integration
 
 1. Prefer official show playlists and paginate `playlistItems.list` to import archives.
 2. Otherwise list a channel's uploads and apply normalized title/description matching within that channel, with manual exceptions.
 3. Maintain a shared public catalogue using a scheduled GitHub Action and a YouTube API key stored as an Actions secret. Cache metadata and respect API quotas and refresh policies. Scheduled Actions are not exact-time delivery.
-4. Add Firebase Authentication and per-user Firestore collections for followed shows, favorites, watched IDs and watchlists. Use security rules tied to the authenticated UID.
+4. Keep using Firebase Authentication and the existing private Firestore state for each user. Expand the private schema when the library needs more granular collections.
 5. Use a server or Worker for private, dynamic per-user YouTube catalogue requests when necessary; never put a server API secret in frontend files.
 
 Firebase is a separate concern from YouTube metadata ingestion. GitHub Pages is static hosting and cannot run a persistent backend.

@@ -27,14 +27,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Validate JavaScript and application behavior
+          cache: npm
+      - name: Set up Java for Firestore security tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install validation dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate application and account isolation
         run: |
           node --check app.js
-          node --test tests/app.test.cjs
+          node --check cloud-state.js
+          node --check firebase-app.mjs
+          npm test
+          npm run test:rules
       - name: Prepare static files
         run: |
           mkdir _site
-          cp index.html styles.css app.js favicon.svg .nojekyll _site/
+          cp index.html styles.css app.js cloud-state.js firebase-app.mjs favicon.svg .nojekyll _site/
           cp -R data _site/data
       - name: Configure Pages
         uses: actions/configure-pages@v5
