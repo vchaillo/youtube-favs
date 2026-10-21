@@ -130,3 +130,41 @@ test('player waits for explicit load and rejects unsafe external inputs',()=>{
   assert.equal(app.run("videoId('https://youtube.com.evil.test/watch?v=V34x1CxlAZ0')"),null);
   assert.equal(app.run("escapeHtml('<img onerror=alert(1)>')"),'&lt;img onerror=alert(1)&gt;');
 });
+
+test('YouTube imports paginate, retain metadata in memory and persist private references',async()=>{
+  const app=boot();
+  app.run(`location.hash='#/show/papy';render();globalThis.calls=[];globalThis.youtubeFavsCloud.youtube=async data=>{calls.push(data);return {episodes:[{id:'AAAAAAAAAAA',title:'New YouTube episode',author:'JDG',durationLabel:'12:00',publishedAt:'2026-10-21T00:00:00Z'}],nextPageToken:data.pageToken?null:'NEXT',scanned:50};};`);
+  await app.click({youtube:'papy'});
+  assert.equal(app.run("state.episodes.find(e=>e.id==='AAAAAAAAAAA').title"),'New YouTube episode');
+  assert.equal(app.writes.at(-1).next.episodes[0].title,'Vidéo YouTube');
+  assert.equal(app.writes.at(-1).next.episodes[0].apiImported,true);
+  assert.match(app.nodes.get('#app').innerHTML,/Charger la suite/);
+  await app.click({youtube:'papy',continue:'true'});
+  assert.equal(app.run('calls[1].pageToken'),'NEXT');
+  assert.equal(app.run("state.episodes.filter(e=>e.id==='AAAAAAAAAAA').length"),1);
+  assert.match(app.nodes.get('#app').innerHTML,/100 publications analysées/);
+  assert.match(app.nodes.get('#app').innerHTML,/Dernière page atteinte/);
+  assert.equal(app.run('state.following.length'),0);
+});
+
+test('an old-account YouTube response cannot import into the next account',async()=>{
+  const app=boot();
+  app.run('globalThis.youtubeFavsCloud.youtube=()=>new Promise(resolve=>globalThis.releaseYoutube=resolve)');
+  const pending=app.click({youtube:'papy'});
+  app.emit('auth',{status:'signed-out',user:null});
+  app.run("releaseYoutube({episodes:[{id:'AAAAAAAAAAA',title:'Private context'}],scanned:1,nextPageToken:null})");
+  await pending;
+  assert.equal(app.run("state.episodes.some(e=>e.id==='AAAAAAAAAAA')"),false);
+  assert.equal(app.writes.length,0);
+  assert.equal(app.run('youtubeMetadata.size'),0);
+});
+
+test('YouTube errors leave existing selections available and can be retried',async()=>{
+  const app=boot({privateData:{following:['papy']}});
+  app.run("location.hash='#/show/papy';render();globalThis.youtubeFavsCloud.youtube=async()=>{throw new Error('Quota YouTube atteint');}");
+  await app.click({youtube:'papy'});
+  assert.match(app.nodes.get('#app').innerHTML,/Quota YouTube atteint/);
+  assert.equal(app.run('cloudStatus.phase'),'ready');
+  assert.equal(app.run('state.following[0]'),'papy');
+  assert.equal(app.run("youtubeImports.get('papy').busy"),false);
+});

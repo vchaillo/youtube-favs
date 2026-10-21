@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.2.0",
   "scripts": {
-    "test": "node --test tests/app.test.cjs tests/cloud-state.test.cjs",
+    "test": "node --test tests/app.test.cjs tests/cloud-state.test.cjs tests/youtube.test.cjs",
     "test:rules": "firebase emulators:exec --project demo-youtube-favs --only firestore \"node --test tests/firestore.test.cjs\""
   },
   "devDependencies": {

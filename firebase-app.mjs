@@ -2,6 +2,8 @@ import {initializeApp} from 'https://www.gstatic.com/firebasejs/12.19.0/firebase
 import {getAuth,GoogleAuthProvider,onAuthStateChanged,signInWithPopup,signOut} from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {getFirestore,doc,onSnapshot,runTransaction,serverTimestamp} from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
+import {getFunctions,httpsCallable} from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js';
+
 // Firebase Web configuration is public. Firestore rules enforce access to each user's data.
 const firebaseConfig={
   apiKey:'AIzaSyDkNI6foyeLpfEtda47pVMV8AzYGXCcvno',
@@ -13,6 +15,7 @@ const firebaseConfig={
 };
 const firebase=initializeApp(firebaseConfig);
 const auth=getAuth(firebase);
+const youtubeCall=httpsCallable(getFunctions(firebase,'europe-west1'),'youtubeCatalog',{timeout:60000});
 auth.languageCode='fr';
 // Keep Firestore's default memory cache. Personal application data is never persisted to browser storage.
 const db=getFirestore(firebase);
@@ -69,6 +72,19 @@ function connect(user){
   });
 }
 globalThis.youtubeFavsCloud={
+  async youtube(data){
+    const owner=auth.currentUser?.uid,current=generation;
+    if(!owner)throw Object.assign(new Error('Connectez-vous pour actualiser YouTube.'),{code:'session-changed'});
+    try{
+      const response=await youtubeCall(data);
+      if(current!==generation||auth.currentUser?.uid!==owner)throw Object.assign(new Error('Session changed.'),{code:'session-changed'});
+      return response.data;
+    }catch(error){
+      if(error.code==='session-changed')throw error;
+      const unavailable=['functions/not-found','functions/internal','functions/unavailable'].includes(error.code);
+      throw Object.assign(new Error(unavailable?'Le service YouTube est indisponible ou pas encore déployé. Consultez le guide de configuration dans Mon profil.':error.code==='functions/unauthenticated'?'Reconnectez-vous pour actualiser YouTube.':error.message||'La récupération YouTube a échoué.'),{code:error.code});
+    }
+  },
   async signIn(){try{await signInWithPopup(auth,provider);}catch(error){emit('login-error',{message:errorMessage(error)});}},
   async signOut(){
     stopSession();emit('auth',{status:'loading',user:null});

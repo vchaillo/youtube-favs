@@ -2,3 +2,8 @@ node_modules/
 .firebase/
 *-debug.log
 _site/
+
+.env
+.env.*
+.secret.local
+*.service-account.json

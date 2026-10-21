@@ -34,12 +34,17 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install validation dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix functions --ignore-scripts --no-audit --no-fund
       - name: Validate application and account isolation
         run: |
           node --check app.js
           node --check cloud-state.js
           node --check firebase-app.mjs
+          node --check functions/index.js
+          node --check functions/youtube.cjs
+          GCLOUD_PROJECT=demo-youtube-favs node -e "require('./functions/index.js')"
           npm test
           npm run test:rules
       - name: Prepare static files

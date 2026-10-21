@@ -70,3 +70,9 @@ test('permission failures are explicit and disable later writes in that session'
   await assert.rejects(session.save(model.empty(),{...model.empty(),queue:[videoB]}),{code:'session-changed'});
   assert.ok(statuses.some(([status,code])=>status==='error'&&code==='permission-denied'));
 });
+
+test('API references persist without retaining YouTube metadata',()=>{
+  const packed=model.pack({...model.empty(),episodes:[{id:videoA,showId:'papy',title:'API title',apiImported:true,author:'API author',publishedAt:'2026-10-21',durationLabel:'10:00',added:123}]},{shows:[],episodes:[]});
+  assert.deepEqual(packed.episodes,[{id:videoA,showId:'papy',title:'Vidéo YouTube',apiImported:true,note:'',added:123}]);
+  assert.equal(model.hydrate(packed,{shows:[{id:'papy'}],episodes:[]}).episodes[0].apiImported,true);
+});

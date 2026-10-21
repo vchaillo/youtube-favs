@@ -1,3 +1,7 @@
+# YouTube Data API
+
+La récupération sécurisée par Firebase Functions est implémentée. Voir [YOUTUBE_SETUP.md](YOUTUBE_SETUP.md) pour activer l’API, enregistrer la clé serveur et déployer la fonction. L’interface permet ensuite d’actualiser chaque émission et de parcourir ses archives.
+
 # youtube-favs
 
 A personal YouTube show library: follow specific programs instead of entire channels.

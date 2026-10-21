@@ -25,6 +25,9 @@ function initialState() { return privateModel.hydrate(privateModel.empty(),catal
 let state = initialState();
 let cloudStatus = {phase:'loading',user:null,message:'',sync:'ready'};
 let lastSaved = privateModel.empty();
+let youtubeGeneration=0;
+const youtubeMetadata=new Map(),youtubeImports=new Map(),youtubeRequested=new Set();
+let youtubeMessage='';
 function legacyState() {
   try {const raw=localStorage.getItem(STORAGE_KEY);return raw?JSON.parse(raw):null;}catch{return null;}
 }
@@ -51,6 +54,64 @@ function save() {
     }
     return false;
   });
+}
+// API metadata stays in this account's tab memory; Firestore stores references only.
+function applyYoutubeMetadata(){
+  state.episodes=state.episodes.map(episode=>({...episode,...(youtubeMetadata.get(episode.id)||{}),showId:episode.showId}));
+}
+function youtubePanel(show){
+  const progress=youtubeImports.get(show.id)||{};
+  return `<section class="panel youtube-panel" aria-label="Actualisation YouTube"><div><h2>Catalogue YouTube</h2><p role="status" aria-live="polite">${escapeHtml(progress.message||'Récupérez les épisodes, leurs dates et leurs durées depuis la source YouTube.')}</p><span class="small muted">50 publications par page · Les vidéos privées ou supprimées peuvent manquer.</span></div><div class="actions"><button data-youtube="${escapeHtml(show.id)}" ${progress.busy?'disabled':''}>${progress.busy?'Récupération…':'Actualiser depuis YouTube'}</button>${progress.next?`<button class="primary" data-youtube="${escapeHtml(show.id)}" data-continue="true" ${progress.busy?'disabled':''}>Charger la suite</button>`:''}</div></section>`;
+}
+async function refreshYoutube(showId,continuing=false){
+  const show=showFor(showId),previous=youtubeImports.get(showId)||{};
+  if(!canEdit()||!show||previous.busy)return;
+  const generation=youtubeGeneration,uid=cloudStatus.user.uid;
+  const rule=JSON.stringify([show.mode,show.source,show.keywords]);
+  const progress={busy:true,next:continuing?previous.next:null,scanned:continuing?previous.scanned||0:0,matched:continuing?previous.matched||0:0,message:'Connexion à YouTube…'};
+  youtubeImports.set(showId,progress);render();
+  try{
+    const result=await globalThis.youtubeFavsCloud.youtube({action:'catalog',mode:show.mode,source:show.source,keywords:show.keywords,pageToken:progress.next||''});
+    if(generation!==youtubeGeneration||cloudStatus.user?.uid!==uid||!canEdit())return;
+    const current=showFor(showId);
+    if(!current||JSON.stringify([current.mode,current.source,current.keywords])!==rule)return;
+    const newEpisodes=result.episodes.filter(episode=>!state.episodes.some(existing=>existing.id===episode.id));
+    if(privateModel.pack(state,catalogue).episodes.length+newEpisodes.length>1000)throw new Error('La limite de 1 000 ajouts personnels est atteinte. Cette page n’a pas été ajoutée.');
+    for(const episode of result.episodes)youtubeMetadata.set(episode.id,episode);
+    state.episodes.push(...newEpisodes.map(episode=>({...episode,showId,apiImported:true,added:Date.now(),note:''})));
+    applyYoutubeMetadata();
+    const saved=await save();
+    if(generation!==youtubeGeneration||cloudStatus.user?.uid!==uid)return;
+    if(!saved)throw new Error('Les vidéos n’ont pas pu être enregistrées dans votre compte.');
+    progress.scanned+=result.scanned;progress.matched+=result.episodes.length;
+    progress.next=result.nextPageToken;
+    progress.message=`${progress.scanned} publications analysées · ${progress.matched} correspondances · ${newEpisodes.length} ajouts sur cette page. ${progress.next?'Des archives restent à parcourir.':'Dernière page atteinte.'}`;
+    youtubeMessage='';
+  }catch(error){
+    if(generation!==youtubeGeneration||cloudStatus.user?.uid!==uid)return;
+    progress.message=error.message||'La récupération YouTube a échoué.';
+  }finally{
+    if(generation===youtubeGeneration){progress.busy=false;render();}
+  }
+}
+async function reloadYoutubeMetadata(){
+  const generation=youtubeGeneration;
+  const missing=state.episodes.filter(e=>e.apiImported&&!youtubeMetadata.has(e.id)&&!youtubeRequested.has(e.id)).map(e=>e.id);
+  for(const id of missing)youtubeRequested.add(id);
+  for(let offset=0;offset<missing.length;offset+=50){
+    try{
+      const ids=missing.slice(offset,offset+50);
+      const result=await globalThis.youtubeFavsCloud.youtube({action:'videos',ids});
+      if(generation!==youtubeGeneration||!canEdit())return;
+      for(const episode of result.episodes)youtubeMetadata.set(episode.id,episode);
+      // Missing API records may have become private or been deleted. Keep personal selections.
+      for(const id of ids)if(!result.episodes.some(e=>e.id===id))youtubeMetadata.set(id,{id,title:'Vidéo indisponible sur YouTube'});
+      applyYoutubeMetadata();render();
+    }catch(error){
+      if(generation!==youtubeGeneration)return;
+      youtubeMessage=error.message||'Les métadonnées YouTube n’ont pas pu être rechargées.';render();return;
+    }
+  }
 }
 function safePhoto(value) {
   try {const url=new URL(value);return url.protocol==='https:'?url.href:'';}catch{return '';}
@@ -96,7 +157,7 @@ function catalogueDate() {
   return catalogue.importedAt ? new Date(catalogue.importedAt).toLocaleDateString('fr-FR',{timeZone:'Europe/Paris'}) : 'non disponible';
 }
 function demoNote() {
-  return `<div class="demo-note">${icon('info')}<span>Catalogue importé le ${catalogueDate()} · Actualisation automatique non activée. Vos choix sont sauvegardés sur votre compte.</span><a href="#/about">Comment ça marche ? ↗</a></div>`;
+  return `<div class="demo-note">${icon('info')}<span>Catalogue importé le ${catalogueDate()} · Actualisez vos émissions depuis leur fiche. Vos choix sont sauvegardés sur votre compte.</span><a href="#/about">Comment ça marche ? ↗</a></div>`;
 }
 function heading(eyebrow,title,description,action='') {
   return `<div class="title-row"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="sub">${description}</p></div>${action}</div>`;
@@ -139,18 +200,18 @@ function detailPage(id) {
   const show = showFor(id);
   if (!show) return heading('Bibliothèque','Émission introuvable','Cette émission n’existe plus.') + '<a href="#/shows" class="link-button">Mes émissions</a>';
   const episodes = state.episodes.filter(e => e.showId === id);
-  return `<a href="#/explore" class="back">← Explorer les émissions</a><section class="detail-hero"><div><div class="eyebrow">${escapeHtml(show.category)} · ${escapeHtml(show.channel)}</div><h1>${escapeHtml(show.name)}</h1><p class="sub">${escapeHtml(show.description)}</p><span class="source-rule">${show.mode === 'playlist' ? 'Playlist' : show.mode === 'channel' ? 'Chaîne entière' : 'Sélection par mots-clés'} · ${show.catalogCount ? 'Catalogue importé' : 'Suivi personnel'}</span><p class="small">${escapeHtml(show.sourceNote || 'Catalogue personnel.')}</p>${show.missingEntries?.length ? `<p class="small">${show.missingEntries.map(entry => `<a class="accent" href="${escapeHtml(entry.officialUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.title)} sur CANAL+ ↗</a>`).join(' · ')}</p>` : ''}<a class="source-link" href="${escapeHtml(show.source)}" target="_blank" rel="noopener noreferrer">Voir la source YouTube ↗</a><div class="stats"><div><strong>${episodes.length}</strong>vidéos référencées</div><div><strong>${episodes.filter(e=>state.watched.includes(e.id)).length}</strong>épisodes vus</div></div><div class="actions"><button class="primary" data-follow="${escapeHtml(id)}">${state.following.includes(id)?'✓ Émission suivie':'+ Suivre cette émission'}</button><button data-edit-show="${escapeHtml(id)}">${icon('settings')} Règle de suivi</button><button data-add-video="${escapeHtml(id)}">${icon('plus')} Ajouter une vidéo</button></div></div>${imageTag(show.cover)}</section><div class="section-line"><h2>Les épisodes <span class="count" id="resultCount"></span></h2></div>${toolbar('episodes')}<div id="results"></div>`;
+  return `<a href="#/explore" class="back">← Explorer les émissions</a><section class="detail-hero"><div><div class="eyebrow">${escapeHtml(show.category)} · ${escapeHtml(show.channel)}</div><h1>${escapeHtml(show.name)}</h1><p class="sub">${escapeHtml(show.description)}</p><span class="source-rule">${show.mode === 'playlist' ? 'Playlist' : show.mode === 'channel' ? 'Chaîne entière' : 'Sélection par mots-clés'} · ${show.catalogCount ? 'Catalogue importé' : 'Suivi personnel'}</span><p class="small">${escapeHtml(show.sourceNote || 'Catalogue personnel.')}</p>${show.missingEntries?.length ? `<p class="small">${show.missingEntries.map(entry => `<a class="accent" href="${escapeHtml(entry.officialUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.title)} sur CANAL+ ↗</a>`).join(' · ')}</p>` : ''}<a class="source-link" href="${escapeHtml(show.source)}" target="_blank" rel="noopener noreferrer">Voir la source YouTube ↗</a><div class="stats"><div><strong>${episodes.length}</strong>vidéos référencées</div><div><strong>${episodes.filter(e=>state.watched.includes(e.id)).length}</strong>épisodes vus</div></div><div class="actions"><button class="primary" data-follow="${escapeHtml(id)}">${state.following.includes(id)?'✓ Émission suivie':'+ Suivre cette émission'}</button><button data-edit-show="${escapeHtml(id)}">${icon('settings')} Règle de suivi</button><button data-add-video="${escapeHtml(id)}">${icon('plus')} Ajouter une vidéo</button></div></div>${imageTag(show.cover)}</section>${youtubePanel(show)}<div class="section-line"><h2>Les épisodes <span class="count" id="resultCount"></span></h2></div>${toolbar('episodes')}<div id="results"></div>`;
 }
 function settingsPage() {
   const colors=['#f15a61','#e7bc75','#80bfa3','#83aaff','#ba9af1'];
   const user=cloudStatus.user;
-  return heading('Votre espace','Mon profil','Vos suivis et vos préférences vous accompagnent sur tous vos appareils.') + `<section class="panel"><div class="profile-identity">${avatar(user,true)}<div><h2>${escapeHtml(user.displayName||'Mon compte')}</h2><p>${escapeHtml(user.email)}</p><span class="small muted">Connexion Google · ${cloudStatus.sync==='saving'?'Enregistrement en cours':'Compte synchronisé'}</span></div><button data-action="sign-out">Se déconnecter</button></div><div class="settings-row"><div><strong>Couleur d’accentuation</strong><p>Le rouge par défaut, ou une autre ambiance.</p></div><div class="swatches">${colors.map(c=>`<button data-accent="${c}" style="--swatch:${c}" class="${state.accent===c?'active':''}" aria-label="Accent ${c}" aria-pressed="${state.accent===c}"></button>`).join('')}</div></div><div class="settings-row"><div><strong>Apparence</strong><p>Choisissez votre thème.</p></div><button data-action="theme">Passer au thème ${state.theme==='dark'?'clair':'sombre'}</button></div></section><section class="panel"><h2>Votre bibliothèque</h2><div class="settings-row"><div><strong>Vos données personnelles</strong><p>${state.following.length} suivis · ${state.favorites.length} favoris · ${state.watched.length} épisodes vus. Les ajouts et règles personnalisées restent propres à votre compte.</p></div></div>${legacyState()?'<div class="settings-row"><div><strong>Ancienne démo détectée</strong><p>Vous pouvez importer les choix de ce navigateur dans ce compte Google. Rien n’est importé automatiquement.</p></div><button data-action="import-legacy">Importer l’ancienne démo</button></div>':''}<div class="settings-row"><div><strong>Catalogue importé le ${catalogueDate()}</strong><p>${seedEpisodes.length} vidéos réparties dans ${seedShows.length} sélections. L’actualisation YouTube n’est pas encore connectée.</p></div><a class="link-button" href="#/about">Consulter les sources</a></div><div class="settings-row"><div><strong>Réinitialiser ma bibliothèque</strong><p>Retire vos suivis, favoris et ajouts personnels de ce compte. Le catalogue commun reste disponible.</p></div><button class="danger" data-action="reset">Réinitialiser</button></div></section>`;
+  return heading('Votre espace','Mon profil','Vos suivis et vos préférences vous accompagnent sur tous vos appareils.') + `<section class="panel"><div class="profile-identity">${avatar(user,true)}<div><h2>${escapeHtml(user.displayName||'Mon compte')}</h2><p>${escapeHtml(user.email)}</p><span class="small muted">Connexion Google · ${cloudStatus.sync==='saving'?'Enregistrement en cours':'Compte synchronisé'}</span></div><button data-action="sign-out">Se déconnecter</button></div><div class="settings-row"><div><strong>Couleur d’accentuation</strong><p>Le rouge par défaut, ou une autre ambiance.</p></div><div class="swatches">${colors.map(c=>`<button data-accent="${c}" style="--swatch:${c}" class="${state.accent===c?'active':''}" aria-label="Accent ${c}" aria-pressed="${state.accent===c}"></button>`).join('')}</div></div><div class="settings-row"><div><strong>Apparence</strong><p>Choisissez votre thème.</p></div><button data-action="theme">Passer au thème ${state.theme==='dark'?'clair':'sombre'}</button></div></section><section class="panel"><h2>Connexion YouTube</h2><p>Actualisez une émission depuis sa fiche pour récupérer ses publications. Les archives se parcourent par pages de 50. Aucun accès à vos abonnements ou vidéos privés n’est demandé.</p><p class="small" role="status">${escapeHtml(youtubeMessage||'Le service nécessite une clé YouTube côté Firebase.')}</p><div class="actions"><button data-action="retry-youtube">Recharger les titres YouTube</button><a class="link-button" href="https://github.com/vchaillo/youtube-favs/blob/main/YOUTUBE_SETUP.md" target="_blank" rel="noopener noreferrer">Guide de configuration ↗</a></div></section><section class="panel"><h2>Votre bibliothèque</h2><div class="settings-row"><div><strong>Vos données personnelles</strong><p>${state.following.length} suivis · ${state.favorites.length} favoris · ${state.watched.length} épisodes vus. Les ajouts et règles personnalisées restent propres à votre compte.</p></div></div>${legacyState()?'<div class="settings-row"><div><strong>Ancienne démo détectée</strong><p>Vous pouvez importer les choix de ce navigateur dans ce compte Google. Rien n’est importé automatiquement.</p></div><button data-action="import-legacy">Importer l’ancienne démo</button></div>':''}<div class="settings-row"><div><strong>Catalogue importé le ${catalogueDate()}</strong><p>${seedEpisodes.length} vidéos réparties dans ${seedShows.length} sélections. L’actualisation est disponible sur la fiche de chaque émission, une fois le service Firebase activé.</p></div><a class="link-button" href="#/about">Consulter les sources</a></div><div class="settings-row"><div><strong>Réinitialiser ma bibliothèque</strong><p>Retire vos suivis, favoris et ajouts personnels de ce compte. Le catalogue commun reste disponible.</p></div><button class="danger" data-action="reset">Réinitialiser</button></div></section>`;
 }
 function catalogueOverview() {
   return `<section class="panel"><h2>Les sources du catalogue</h2><p>Relevé du ${catalogueDate()}. ${seedEpisodes.length} vidéos référencées ; aucune vidéo n’est téléchargée ou hébergée ici.</p><ul class="rule-list">${seedShows.map(show => `<li><strong>${escapeHtml(show.name)} · ${show.catalogCount} vidéos</strong><br>${escapeHtml(show.sourceNote)}<br><a class="accent" href="${escapeHtml(show.source)}" target="_blank" rel="noopener noreferrer">Ouvrir la source YouTube ↗</a></li>`).join('')}</ul></section>`;
 }
 function aboutPage() {
-  return heading('Sous le capot','Le bon programme. Au bon endroit.','Un agrégateur d’émissions YouTube, pensé pour votre propre sélection.') + `<section class="panel"><h2>Ce que vous pouvez déjà tester</h2><p>Suivre ou ne plus suivre une émission, rechercher et filtrer les épisodes, passer de la galerie à la liste, lire une vidéo, conserver des favoris et une liste à voir, marquer les épisodes comme vus, ajouter manuellement une vidéo, personnaliser le thème et explorer les catalogues importés.</p><p>Les vidéos référencées proviennent de catalogues publics relevés le ${catalogueDate()}. Les playlists ont été parcourues jusqu’à leur dernière page. Les vidéos privées, supprimées ou absentes des sources peuvent manquer. Aucune mise à jour automatique n’est active pour le moment.</p></section>${catalogueOverview()}<section class="panel"><h2>Comment automatiser le suivi ?</h2><ul class="rule-list"><li><strong>1. Une playlist officielle, en priorité.</strong> On récupère tous ses éléments avec pagination. Les nouveaux épisodes apparaissent lorsque la chaîne les ajoute.</li><li><strong>2. Une chaîne et des règles de sélection.</strong> On parcourt les publications de la chaîne et on filtre le titre ou la description. Exemple : « papy grenier ». Pour Rhinocéros : « rhinocéros » ou « 🦏 ». Les accents et les majuscules sont ignorés.</li><li><strong>3. Une correction manuelle.</strong> Certaines émissions n’ont pas de nom dans le titre ou changent de présentation. Des exclusions et ajouts manuels permettront de corriger les erreurs.</li></ul></section><section class="panel"><h2>Les limites techniques</h2><ul class="rule-list"><li><strong>GitHub Pages héberge le frontend.</strong> Il n’exécute pas de serveur. Une GitHub Action planifiée peut alimenter un catalogue public JSON ; un service séparé peut gérer des suivis individuels. Une exécution planifiée peut être retardée.</li><li><strong>L’API YouTube permettra d’actualiser le catalogue.</strong> Elle demande un projet Google Cloud, une clé API et respecte des quotas. Les appels peuvent partir du navigateur avec une clé restreinte au domaine, ou d’un serveur avec une clé conservée dans ses secrets. Les appels par playlist sont plus adaptés qu’une recherche complète à chaque visite.</li><li><strong>La lecture reste celle de YouTube.</strong> Certaines vidéos interdisent l’intégration, sont privées, supprimées ou restreintes selon l’âge ou le pays. Le lien « Ouvrir sur YouTube » reste disponible. Les publicités et restrictions ne sont pas contournées.</li><li><strong>Firebase gère votre espace personnel.</strong> La connexion Google identifie votre compte ; Firestore conserve vos suivis, favoris et états de visionnage. Les règles limitent l’accès au propriétaire de ces données. Il ne remplace pas l’API de catalogue YouTube.</li><li><strong>Confidentialité.</strong> Les miniatures sont chargées depuis YouTube. Le lecteur youtube-nocookie.com n’est créé qu’après votre clic sur « Charger le lecteur » ; ce clic déclenche une connexion au service YouTube.</li></ul><p><a class="accent" href="https://developers.google.com/youtube/v3/getting-started" target="_blank" rel="noopener noreferrer">Documentation YouTube Data API ↗</a> · <a class="accent" href="https://developers.google.com/youtube/iframe_api_reference" target="_blank" rel="noopener noreferrer">Documentation du lecteur ↗</a></p></section>`;
+  return heading('Sous le capot','Le bon programme. Au bon endroit.','Un agrégateur d’émissions YouTube, pensé pour votre propre sélection.') + `<section class="panel"><h2>Ce que vous pouvez déjà tester</h2><p>Suivre ou ne plus suivre une émission, rechercher et filtrer les épisodes, passer de la galerie à la liste, lire une vidéo, conserver des favoris et une liste à voir, marquer les épisodes comme vus, ajouter manuellement une vidéo, personnaliser le thème et explorer les catalogues importés.</p><p>Les vidéos référencées proviennent de catalogues publics relevés le ${catalogueDate()}. Les playlists ont été parcourues jusqu’à leur dernière page. Les vidéos privées, supprimées ou absentes des sources peuvent manquer. L’actualisation via YouTube se lance depuis chaque émission, avec le bouton « Actualiser depuis YouTube ». Le service Firebase doit être activé. Aucun rafraîchissement en arrière-plan n’est planifié.</p></section>${catalogueOverview()}<section class="panel"><h2>Comment automatiser le suivi ?</h2><ul class="rule-list"><li><strong>1. Une playlist officielle, en priorité.</strong> On récupère tous ses éléments avec pagination. Les nouveaux épisodes apparaissent lorsque la chaîne les ajoute.</li><li><strong>2. Une chaîne et des règles de sélection.</strong> On parcourt les publications de la chaîne et on filtre le titre ou la description. Exemple : « papy grenier ». Pour Rhinocéros : « rhinocéros » ou « 🦏 ». Les accents et les majuscules sont ignorés.</li><li><strong>3. Une correction manuelle.</strong> Certaines émissions n’ont pas de nom dans le titre ou changent de présentation. Des exclusions et ajouts manuels permettront de corriger les erreurs.</li></ul></section><section class="panel"><h2>Les limites techniques</h2><ul class="rule-list"><li><strong>GitHub Pages héberge le frontend.</strong> Il n’exécute pas de serveur. Une GitHub Action planifiée peut alimenter un catalogue public JSON ; un service séparé peut gérer des suivis individuels. Une exécution planifiée peut être retardée.</li><li><strong>L’API YouTube permettra d’actualiser le catalogue.</strong> Elle demande un projet Google Cloud, une clé API et respecte des quotas. Les appels peuvent partir du navigateur avec une clé restreinte au domaine, ou d’un serveur avec une clé conservée dans ses secrets. Les appels par playlist sont plus adaptés qu’une recherche complète à chaque visite.</li><li><strong>La lecture reste celle de YouTube.</strong> Certaines vidéos interdisent l’intégration, sont privées, supprimées ou restreintes selon l’âge ou le pays. Le lien « Ouvrir sur YouTube » reste disponible. Les publicités et restrictions ne sont pas contournées.</li><li><strong>Firebase gère votre espace personnel.</strong> La connexion Google identifie votre compte ; Firestore conserve vos suivis, favoris et états de visionnage. Les règles limitent l’accès au propriétaire de ces données. Il ne remplace pas l’API de catalogue YouTube.</li><li><strong>Confidentialité.</strong> Les miniatures sont chargées depuis YouTube. Le lecteur youtube-nocookie.com n’est créé qu’après votre clic sur « Charger le lecteur » ; ce clic déclenche une connexion au service YouTube.</li></ul><p><a class="accent" href="https://developers.google.com/youtube/v3/getting-started" target="_blank" rel="noopener noreferrer">Documentation YouTube Data API ↗</a> · <a class="accent" href="https://developers.google.com/youtube/iframe_api_reference" target="_blank" rel="noopener noreferrer">Documentation du lecteur ↗</a></p></section>`;
 }
 function render() {
   accountChrome();
@@ -184,7 +245,7 @@ function closeModal() { modal.close(); modalContent.innerHTML=''; }
 function modalHeading(title) { return `<div class="modal-head"><h2 id="modalTitle">${title}</h2><button class="icon-button" data-close aria-label="Fermer">${icon('close')}</button></div>`; }
 function showForm(id) {
   const show = showFor(id);
-  openModal(modalHeading(show?'Règle de suivi':'Suivre une émission') + `<form id="showForm" data-id="${escapeHtml(id || '')}" class="form-grid"><label>Nom de l’émission<input name="name" required maxlength="100" placeholder="Ex. Papy Grenier" value="${escapeHtml(show?.name || '')}"></label><label>Chaîne YouTube<input name="channel" required maxlength="100" placeholder="Ex. Joueur du Grenier" value="${escapeHtml(show?.channel || '')}"></label><label>Méthode de suivi<select name="mode"><option value="keywords" ${show?.mode==='keywords'?'selected':''}>Chaîne + mots-clés</option><option value="playlist" ${show?.mode==='playlist'?'selected':''}>Playlist YouTube</option><option value="channel" ${show?.mode==='channel'?'selected':''}>Chaîne entière</option></select></label><label>Lien de la chaîne ou de la playlist<input name="source" type="url" required placeholder="https://www.youtube.com/…" value="${escapeHtml(show?.source || '')}"></label><label>Mots-clés, séparés par des virgules<input name="keywords" maxlength="200" placeholder="Ex. rhinocéros, 🦏" value="${escapeHtml(show?.keywords || '')}"><span class="hint">Au moins un mot-clé doit correspondre au titre ou à la description. Les mots-clés ne sont pas nécessaires avec une playlist ou une chaîne entière.</span></label><div class="rule-preview" id="rulePreview"></div><p class="hint">Prototype : cette règle est enregistrée, mais aucune récupération automatique n’est encore active. Vous pouvez ajouter des vidéos manuellement.</p><div class="form-error" id="formError" role="alert"></div><div class="form-footer"><button type="button" data-close>Annuler</button><button class="primary">${show?'Enregistrer la règle':'Suivre cette émission'}</button></div></form>`);
+  openModal(modalHeading(show?'Règle de suivi':'Suivre une émission') + `<form id="showForm" data-id="${escapeHtml(id || '')}" class="form-grid"><label>Nom de l’émission<input name="name" required maxlength="100" placeholder="Ex. Papy Grenier" value="${escapeHtml(show?.name || '')}"></label><label>Chaîne YouTube<input name="channel" required maxlength="100" placeholder="Ex. Joueur du Grenier" value="${escapeHtml(show?.channel || '')}"></label><label>Méthode de suivi<select name="mode"><option value="keywords" ${show?.mode==='keywords'?'selected':''}>Chaîne + mots-clés</option><option value="playlist" ${show?.mode==='playlist'?'selected':''}>Playlist YouTube</option><option value="channel" ${show?.mode==='channel'?'selected':''}>Chaîne entière</option></select></label><label>Lien de la chaîne ou de la playlist<input name="source" type="url" required placeholder="https://www.youtube.com/…" value="${escapeHtml(show?.source || '')}"></label><label>Mots-clés, séparés par des virgules<input name="keywords" maxlength="200" placeholder="Ex. rhinocéros, 🦏" value="${escapeHtml(show?.keywords || '')}"><span class="hint">Au moins un mot-clé doit correspondre au titre ou à la description. Les mots-clés ne sont pas nécessaires avec une playlist ou une chaîne entière.</span></label><div class="rule-preview" id="rulePreview"></div><p class="hint">Après enregistrement, utilisez « Actualiser depuis YouTube » sur la fiche de l’émission pour récupérer ses épisodes.</p><div class="form-error" id="formError" role="alert"></div><div class="form-footer"><button type="button" data-close>Annuler</button><button class="primary">${show?'Enregistrer la règle':'Suivre cette émission'}</button></div></form>`);
   updateRulePreview();
 }
 function updateRulePreview() {
@@ -226,6 +287,8 @@ document.addEventListener('click',async event=>{
   if(data.action==='sign-out'){if(globalThis.youtubeFavsCloud)await globalThis.youtubeFavsCloud.signOut();return;}
   if(data.action==='retry-cloud'){if(globalThis.youtubeFavsCloud)globalThis.youtubeFavsCloud.retry();else location.reload();return;}
   if(!canEdit())return;
+  if(data.youtube)return refreshYoutube(data.youtube,data.continue==='true');
+  if(data.action==='retry-youtube'){youtubeRequested.clear();youtubeMessage='';return reloadYoutubeMetadata();}
   if(data.action==='import-legacy')return openModal(modalHeading('Importer l’ancienne démo ?')+`<p>Les choix conservés sur ce navigateur ne sont associés à aucun compte. Ils seront ajoutés au compte <strong>${escapeHtml(cloudStatus.user.email)}</strong> : suivis, favoris, liste à voir, épisodes vus et ajouts personnels. Ils ne remplaceront pas les autres choix déjà enregistrés dans le cloud.</p><div class="form-footer"><button data-close>Annuler</button><button class="primary" data-action="confirm-import">Importer dans ce compte</button></div>`);
   if(data.action==='confirm-import'){
     const uid=cloudStatus.user.uid,legacy=legacyState();
@@ -264,7 +327,7 @@ document.addEventListener('click',async event=>{
   if(data.action==='theme'){state.theme=state.theme==='dark'?'light':'dark';save();render();return;}
   if(data.action==='clear-filters'){filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};render();return;}
   if(data.action==='reset')return openModal(modalHeading('Réinitialiser ma bibliothèque ?')+'<p>Vos suivis, favoris, épisodes vus et ajouts personnels seront retirés de votre compte. Le catalogue commun restera disponible.</p><div class="form-footer"><button data-close>Annuler</button><button class="primary" data-action="confirm-reset">Réinitialiser</button></div>');
-  if(data.action==='confirm-reset'){state=initialState();save();closeModal();render();toast('Bibliothèque réinitialisée.');}
+  if(data.action==='confirm-reset'){youtubeGeneration++;youtubeMetadata.clear();youtubeImports.clear();youtubeRequested.clear();state=initialState();save();closeModal();render();toast('Bibliothèque réinitialisée.');}
 });
 document.addEventListener('input',event=>{
   if(event.target.id==='search'){filter.query=event.target.value;updateResults();}
@@ -290,14 +353,15 @@ document.addEventListener('submit',event=>{
     if(!name||!channel)return error('Renseignez le nom de l’émission et de la chaîne.');
     if(!source)return error('Utilisez un lien HTTPS youtube.com valide.');
     if(mode==='playlist' && (!['youtube.com','www.youtube.com','m.youtube.com'].includes(source.hostname) || !/^[\w-]{10,}$/.test(source.searchParams.get('list')||'')))return error('Le lien de la playlist doit contenir son identifiant list=.');
-    if(mode!=='playlist' && (!['youtube.com','www.youtube.com','m.youtube.com'].includes(source.hostname) || !/^\/(?:@[^/]+|channel\/[^/]+|user\/[^/]+|c\/[^/]+)\/?$/.test(source.pathname)))return error('Utilisez un lien de chaîne, par exemple youtube.com/@blastinfo.');
+    if(mode!=='playlist' && (!['youtube.com','www.youtube.com','m.youtube.com'].includes(source.hostname) || !/^\/(?:@[^/]+|channel\/[^/]+|user\/[^/]+)\/?$/.test(source.pathname)))return error('Utilisez un lien de chaîne, par exemple youtube.com/@blastinfo.');
     if(mode==='keywords'&&!keywords.split(',').some(v=>v.trim()))return error('Ajoutez au moins un mot-clé.');
     const existing=showFor(form.dataset.id);
     if(state.shows.some(s=>s.id!==existing?.id&&normalize(s.name)===normalize(name)&&normalize(s.channel)===normalize(channel)))return error('Cette émission existe déjà dans votre bibliothèque.');
     const record={...(existing||{}),id:existing?.id||crypto.randomUUID(),name,channel,source:source.href,mode,keywords,initials:existing?.initials||channel.slice(0,2).toUpperCase(),description:existing?.description||'Votre nouvelle émission. Ajoutez des épisodes pour commencer à explorer.',category:existing?.category||'Personnel',cover:existing?.cover||'',customRule:true};
+    youtubeImports.delete(record.id);
     if(existing)state.shows=state.shows.map(s=>s.id===existing.id?record:s);else state.shows.push(record);
     if(!state.following.includes(record.id))state.following.push(record.id);
-    save();closeModal();location.hash=`/show/${record.id}`;render();toast('Règle enregistrée. L’import automatique sera connecté dans une prochaine étape.');
+    save();closeModal();location.hash=`/show/${record.id}`;render();toast('Règle enregistrée. Actualisez depuis YouTube pour récupérer les épisodes.');
   }else{
     const id=videoId(values.get('url').trim());
     const title=values.get('title').trim();
@@ -323,6 +387,7 @@ function armLoadingTimeout() {
 }
 window.addEventListener('youtube-favs:auth',event=>{
   closeModal();
+  youtubeGeneration++;youtubeMetadata.clear();youtubeImports.clear();youtubeRequested.clear();youtubeMessage='';
   state=initialState();lastSaved=privateModel.empty();
   cloudStatus={phase:event.detail.status,user:event.detail.user,message:event.detail.message||'',sync:'ready'};
   filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute='';
@@ -331,9 +396,11 @@ window.addEventListener('youtube-favs:auth',event=>{
 window.addEventListener('youtube-favs:data',event=>{
   if(event.detail.uid!==cloudStatus.user?.uid)return;
   state=privateModel.hydrate(event.detail.data,catalogue);
+  applyYoutubeMetadata();
   lastSaved=privateModel.pack(state,catalogue);
   cloudStatus.phase='ready';cloudStatus.message='';
   clearTimeout(loadingTimer);applyPreferences();render();
+  reloadYoutubeMetadata();
 });
 window.addEventListener('youtube-favs:sync',event=>{
   if(event.detail.uid!==cloudStatus.user?.uid)return;
