@@ -112,15 +112,17 @@ test('search and catalogue metadata remain available with both Cyberpunk version
   assert.equal(app.run('new Set(seedEpisodes.map(e=>e.id)).size'),189);
 });
 
-test('manual shows are private and reject invalid YouTube links',()=>{
+test('new shows save their private rule and automatically open an import preview',async()=>{
   const app=boot();
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[],scanned:0,nextPageToken:null})");
   const form={id:'showForm',dataset:{},values:{name:'Test show',channel:'Test channel',mode:'channel',source:'https://evil.test/@channel',keywords:''}};
   const submit=()=>app.listeners.submit({preventDefault(){},target:form});
-  submit();assert.equal(app.run('state.shows.length'),5);
-  form.values.source='https://www.youtube.com/@test';submit();
+  await submit();assert.equal(app.run('state.shows.length'),5);
+  form.values.source='https://www.youtube.com/@test';await submit();
   assert.equal(app.run('state.shows.length'),6);
   assert.equal(app.writes.at(-1).next.shows.length,1);
   assert.equal(app.writes.at(-1).next.shows[0].name,'Test show');
+  assert.match(app.nodes.get('#modalContent').innerHTML,/Importer depuis YouTube/);
 });
 
 test('player waits for explicit load and rejects unsafe external inputs',()=>{
@@ -131,20 +133,60 @@ test('player waits for explicit load and rejects unsafe external inputs',()=>{
   assert.equal(app.run("escapeHtml('<img onerror=alert(1)>')"),'&lt;img onerror=alert(1)&gt;');
 });
 
-test('YouTube imports paginate, retain metadata in memory and persist private references',async()=>{
+test('YouTube previews paginate without saving and import only explicitly selected videos',async()=>{
   const app=boot();
-  app.run(`location.hash='#/show/papy';render();globalThis.calls=[];globalThis.youtubeFavsCloud.youtube=async data=>{calls.push(data);return {episodes:[{id:'AAAAAAAAAAA',title:'New YouTube episode',author:'JDG',durationLabel:'12:00',publishedAt:'2026-10-21T00:00:00Z'}],nextPageToken:data.pageToken?null:'NEXT',scanned:50};};`);
+  app.run(`location.hash='#/show/papy';render();globalThis.calls=[];globalThis.youtubeFavsCloud.youtube=async data=>{calls.push(data);return {episodes:[{id:'AAAAAAAAAAA',title:'New YouTube episode',author:'JDG',durationLabel:'12:00',publishedAt:'2026-10-21T00:00:00Z'},{id:'BBBBBBBBBBB',title:'Second episode'}],nextPageToken:data.pageToken?null:'NEXT',scanned:50};};`);
   await app.click({youtube:'papy'});
-  assert.equal(app.run("state.episodes.find(e=>e.id==='AAAAAAAAAAA').title"),'New YouTube episode');
-  assert.equal(app.writes.at(-1).next.episodes[0].title,'Vidéo YouTube');
-  assert.equal(app.writes.at(-1).next.episodes[0].apiImported,true);
-  assert.match(app.nodes.get('#app').innerHTML,/Charger la suite/);
+  assert.equal(app.run("state.episodes.some(e=>e.id==='AAAAAAAAAAA')"),false);
+  assert.equal(app.writes.length,0);
+  assert.match(app.nodes.get('#modalContent').innerHTML,/Importer la sélection/);
+  app.listeners.change({target:{dataset:{importVideo:'BBBBBBBBBBB'},checked:false}});
   await app.click({youtube:'papy',continue:'true'});
   assert.equal(app.run('calls[1].pageToken'),'NEXT');
-  assert.equal(app.run("state.episodes.filter(e=>e.id==='AAAAAAAAAAA').length"),1);
-  assert.match(app.nodes.get('#app').innerHTML,/100 publications analysées/);
-  assert.match(app.nodes.get('#app').innerHTML,/Dernière page atteinte/);
-  assert.equal(app.run('state.following.length'),0);
+  assert.equal(app.run("youtubeImports.get('papy').candidates.length"),2);
+  assert.equal(app.run("youtubeImports.get('papy').selected.has('BBBBBBBBBBB')"),false);
+  assert.match(app.nodes.get('#modalContent').innerHTML,/100 publications analysées/);
+  await app.click({action:'confirm-youtube-import'});
+  assert.equal(app.run("state.episodes.find(e=>e.id==='AAAAAAAAAAA').title"),'New YouTube episode');
+  assert.equal(app.run("state.episodes.some(e=>e.id==='BBBBBBBBBBB')"),false);
+  assert.equal(app.writes.at(-1).next.episodes[0].title,'Vidéo YouTube');
+  assert.equal(app.writes.at(-1).next.episodes[0].apiImported,true);
+  assert.match(app.nodes.get('#modalContent').innerHTML,/Déjà présente/);
+});
+
+test('closing the import preview never writes video references',async()=>{
+  const app=boot();app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'Preview only'}],scanned:1,nextPageToken:null})");
+  await app.click({youtube:'papy'});await app.click({close:''});
+  assert.equal(app.writes.length,0);assert.equal(app.run("state.episodes.some(e=>e.id==='AAAAAAAAAAA')"),false);
+});
+
+test('removing a bundled video persists a private exclusion and does not auto-select it on import',async()=>{
+  const app=boot({privateData:{following:['papy'],favorites:['V34x1CxlAZ0'],queue:['V34x1CxlAZ0']}});
+  await app.click({removeVideo:'V34x1CxlAZ0'});
+  app.run("location.hash='#/show/papy';render()");
+  assert.equal(app.run("filteredEpisodes().some(e=>e.id==='V34x1CxlAZ0')"),false);
+  assert.equal(app.writes.at(-1).next.episodes[0].hidden,true);
+  assert.equal(app.writes.at(-1).next.favorites.length,0);
+  const saved=app.writes.at(-1).next;
+  app.emit('data',{uid:'alice',data:saved});
+  assert.equal(app.run("filteredEpisodes().some(e=>e.id==='V34x1CxlAZ0')"),false);
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'V34x1CxlAZ0',title:'Removed video'}],scanned:1,nextPageToken:null})");
+  await app.click({youtube:'papy'});
+  assert.equal(app.run("youtubeImports.get('papy').selected.size"),0);
+  app.listeners.change({target:{dataset:{importVideo:'V34x1CxlAZ0'},checked:true}});
+  await app.click({action:'confirm-youtube-import'});
+  assert.equal(app.run("visibleEpisodes().some(e=>e.id==='V34x1CxlAZ0')"),true);
+  assert.equal(app.writes.at(-1).next.episodes.length,0);
+});
+
+test('removed custom imports stay absent and a different account keeps the shared catalogue',async()=>{
+  const app=boot({privateData:{episodes:[{id:'AAAAAAAAAAA',showId:'papy',title:'Video',apiImported:true}]}});
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[]})");
+  await app.click({removeVideo:'AAAAAAAAAAA'});
+  assert.equal(app.writes.at(-1).next.episodes[0].hidden,true);
+  assert.equal(app.run("visibleEpisodes().some(e=>e.id==='AAAAAAAAAAA')"),false);
+  app.emit('auth',{status:'loading',user:{uid:'bob'}});app.emit('data',{uid:'bob',data:app.run('privateModel.empty()')});
+  assert.equal(app.run('visibleEpisodes().length'),189);
 });
 
 test('an old-account YouTube response cannot import into the next account',async()=>{

@@ -76,3 +76,16 @@ test('API references persist without retaining YouTube metadata',()=>{
   assert.deepEqual(packed.episodes,[{id:videoA,showId:'papy',title:'Vidéo YouTube',apiImported:true,note:'',added:123}]);
   assert.equal(model.hydrate(packed,{shows:[{id:'papy'}],episodes:[]}).episodes[0].apiImported,true);
 });
+
+
+test('private removals override bundled records and survive unrelated edits without copying metadata',()=>{
+  const catalogue={shows:[{id:'papy'}],episodes:[{id:videoA,showId:'papy',title:'Shared title',author:'Shared author'}]};
+  const initial=model.hydrate(model.empty(),catalogue);initial.episodes[0].hidden=true;
+  const packed=model.pack(initial,catalogue);
+  assert.equal(packed.episodes[0].hidden,true);assert.equal(packed.episodes[0].title,'Vidéo retirée');
+  assert.equal(packed.episodes[0].author,undefined);
+  const restored=model.hydrate(packed,catalogue);assert.equal(restored.episodes[0].hidden,true);
+  restored.theme='light';assert.equal(model.pack(restored,catalogue).episodes[0].hidden,true);
+  restored.episodes[0].hidden=false;assert.equal(model.pack(restored,catalogue).episodes.length,0);
+  assert.equal(model.hydrate(model.empty(),catalogue).episodes[0].hidden,undefined);
+});

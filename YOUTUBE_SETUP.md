@@ -79,8 +79,8 @@ Ce contrôle vérifie la configuration déclarée, pas la validité de la clé c
 2. Ouvrir **Mon profil** depuis l'avatar en haut à droite.
 3. Dans **Connexion YouTube**, coller l'URL publique du Worker, sans `/health`, `/api/youtube`, paramètres ou clé.
 4. Cliquer sur **Tester et enregistrer**. Le site vérifie `/health` avant d'enregistrer l'adresse dans ce navigateur.
-5. Ouvrir **Papy Grenier** et cliquer sur **Actualiser depuis YouTube**.
-6. Tester **Rhinocéros** et **Esquive la Boule de Feu**. Utiliser **Charger la suite** pour parcourir les archives jusqu'au message **Dernière page atteinte**.
+5. Ouvrir **Papy Grenier** et cliquer sur **Importer depuis YouTube**. Une prévisualisation affiche les vidéos trouvées : cocher les vidéos souhaitées puis confirmer avec **Importer la sélection**. Aucun ajout n’est effectué avant cette confirmation.
+6. Tester **Rhinocéros** et **Esquive la Boule de Feu**. Dans la prévisualisation, utiliser **Charger la suite** pour parcourir les archives jusqu'au message **Dernière page atteinte**.
 
 La connexion Google et les règles [firestore.rules](firestore.rules) existantes restent nécessaires. Si la bibliothèque fonctionne déjà, aucune modification Firebase n'est requise. L'URL du Worker est une configuration locale publique ; suivis, favoris et épisodes vus restent sauvegardés dans le compte Firebase.
 
@@ -107,7 +107,7 @@ La dernière commande demande la clé de manière interactive et publie une nouv
 - La récupération est déclenchée à la demande, sans GitHub Action de catalogue ni tâche Firebase planifiée. La recherche globale YouTube n'est pas encore une interface de cette version ; le champ de recherche existant filtre le catalogue déjà importé. Les nouvelles sources peuvent être ajoutées par leur lien dans « Suivre une émission ».
 - Les limites natives Cloudflare sont de 30 demandes/minute/compte et 60 pages non mises en cache/minute pour l'application, **par emplacement Cloudflare**. Elles sont approximatives et ne constituent pas un compteur mondial strict ni un budget journalier. Le quota Google Cloud reste la limite globale de l'API YouTube. Les namespaces de ces deux bindings sont propres à youtube-favs.
 - Cache en mémoire : 15 minutes, 128 pages maximum par instance. Il peut disparaître au redémarrage ou différer entre instances. Les métadonnées API ne sont pas copiées dans Firestore ; seuls les identifiants et les choix personnels sont sauvegardés. Le catalogue historique fourni dans le dépôt reste un relevé statique distinct.
-- Limite actuelle : 1 000 ajouts personnels par compte, en plus du catalogue initial. Une vidéo reste rattachée à une seule émission. L'import est additif et ne supprime pas les anciens ajouts lorsque les règles changent.
+- Limite actuelle : 1 000 ajouts et retraits personnels par compte, en plus du catalogue initial. Une vidéo reste rattachée à une seule émission. L'import est additif et ne supprime pas les anciens ajouts lorsque les règles changent.
 - Les vidéos privées, supprimées ou absentes de la source peuvent manquer. La lecture, les publicités et les restrictions régionales ou d'intégration restent contrôlées par YouTube.
 - Utiliser Workers **Free** et Firebase **Spark** dans leurs quotas. Le quota Workers gratuit est partagé avec les autres Workers du compte, dont MovieQuest. Vérifier les quotas Google Cloud et Cloudflare selon l'utilisation.
 
@@ -126,3 +126,29 @@ npm run test:rules
 Le contrôle Wrangler est un assemblage local à blanc : il ne déploie rien et n'utilise pas de clé YouTube. Les tests vérifient l'API HTTP, les signatures RSA, le refus des sessions invalides, la pagination, le filtrage, les limites, les changements de compte et la configuration du frontend. Le test réel avec la clé YouTube se fait après déploiement du Worker.
 
 Documentation : [secrets Workers](https://developers.cloudflare.com/workers/configuration/secrets/), [déploiement depuis Git](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/), [limites natives](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/), [vérification Firebase](https://firebase.google.com/docs/auth/admin/verify-id-tokens), [API YouTube](https://developers.google.com/youtube/v3/getting-started).
+
+
+## Prévisualisation et retrait de vidéos
+
+L’enregistrement d’une nouvelle émission ouvre automatiquement la prévisualisation YouTube. Pour une émission existante, **Importer depuis YouTube** relance la lecture de sa source pour trouver d’éventuelles nouveautés. Les résultats se parcourent par pages, avec miniatures, titres, dates et durées ; les vidéos déjà présentes sont signalées et ne créent pas de doublons. Les choix de cases à cocher sont conservés lors du chargement des pages suivantes.
+
+**Importer la sélection** ajoute uniquement les vidéos choisies. Fermer la prévisualisation n’ajoute aucune vidéo. Le bouton **Retirer** dans la prévisualisation, ou la croix sur une carte, retire une vidéo de la bibliothèque de ce compte, y compris une vidéo du catalogue initial. Elle reste retirée après rechargement et n’est pas sélectionnée automatiquement à l’import suivant. Une sélection explicite permet de la réimporter. Le catalogue des autres utilisateurs reste intact.
+
+Les retraits sont stockés comme références privées marquées dans le document existant : aucune nouvelle collection ni modification des règles Firestore n’est nécessaire.
+
+## Dépanner une erreur de clé YouTube
+
+L’ancien message « La clé ou l’activation de YouTube Data API doit être vérifiée côté serveur » regroupait plusieurs erreurs Google. Mettre le Worker à jour depuis la branche `main` pour obtenir le motif précis. `/health` doit annoncer la version `2026-10-21-import-preview` ; ce contrôle seul ne vérifie pas la validité de la clé chez Google.
+
+Dans **Mon profil**, **Tester l’accès à YouTube** effectue une véritable lecture de vidéo publique avec la clé conservée dans le Worker. Le résultat permet de distinguer :
+
+| Motif | Vérification |
+| --- | --- |
+| `SERVICE_DISABLED` / `accessNotConfigured` | Activer YouTube Data API v3 dans le projet **auquel appartient la clé**, puis attendre quelques minutes si l’activation est récente. |
+| `API_KEY_SERVICE_BLOCKED` | Autoriser YouTube Data API v3 dans les restrictions relatives aux API de la clé. |
+| `API_KEY_HTTP_REFERRER_BLOCKED` / `ipRefererBlocked` | Une restriction « Sites Web » bloque les appels serveur ; utiliser la clé serveur dédiée, sans cette restriction d’application. |
+| `API_KEY_IP_ADDRESS_BLOCKED` | Une restriction d’adresse IP ne correspond pas à la sortie réseau Cloudflare. |
+| `API_KEY_INVALID` / `keyInvalid` | Remplacer le secret `YOUTUBE_API_KEY` par la clé complète, sans guillemets, puis déployer la modification Cloudflare. |
+| `forbidden` | Vérifier les restrictions de la clé et le caractère public de la source. Ce motif seul ne prouve pas que la clé est invalide. |
+
+Le projet de la clé YouTube peut être distinct du projet Firebase : c’est le projet de la **clé YouTube** qui doit avoir l’API activée. Ne jamais envoyer la clé dans une discussion pour diagnostiquer le problème. Les messages affichent uniquement des motifs reconnus ; aucune URL Google brute ni valeur de secret n’est exposée.

@@ -76,3 +76,12 @@ test('missing key stops requests and explicit video batches handle disappeared v
 test('duration formatting preserves long episodes',()=>{
   assert.equal(durationLabel('PT2M5S'),'2:05');assert.equal(durationLabel('P1DT2H'),'26:00:00');assert.equal(durationLabel('bad'),'');
 });
+
+
+test('Google errors distinguish service activation, key restrictions and invalid keys without reflecting secrets',async()=>{
+  const cases=[['SERVICE_DISABLED','désactivée'],['API_KEY_SERVICE_BLOCKED','restrictions'],['API_KEY_HTTP_REFERRER_BLOCKED','site web'],['API_KEY_INVALID','invalide']];
+  for(const [reason,message] of cases){
+    const {service}=fixture({fetchImpl:async()=>({ok:false,status:403,json:async()=>({error:{message:'secret-key-and-url',errors:[{reason:'forbidden'}],details:[{reason}]}})})});
+    await assert.rejects(service({auth,data:catalog}),error=>error.code==='failed-precondition'&&error.message.includes(reason)&&error.message.includes(message)&&!error.message.includes('secret-key'));
+  }
+});

@@ -11,7 +11,7 @@ export function createWorker({verifyToken=verifyFirebaseToken,fetchImpl=fetch}={
     if(request.headers.get('Origin')&&request.headers.get('Origin')!==ALLOWED_ORIGIN)return error('forbidden','Origine non autorisée.',403);
     if(request.method==='OPTIONS')return new Response(null,{status:204,headers:cors});
     const path=new URL(request.url).pathname;
-    if(path==='/health'&&request.method==='GET')return json({ok:true,service:'youtube-favs',projectId:PROJECT_ID,youtubeConfigured:Boolean(env.YOUTUBE_API_KEY),rateLimitConfigured:Boolean(env.USER_LIMITER&&env.GLOBAL_LIMITER)});
+    if(path==='/health'&&request.method==='GET')return json({ok:true,service:'youtube-favs',version:'2026-10-21-import-preview',projectId:PROJECT_ID,youtubeConfigured:Boolean(env.YOUTUBE_API_KEY),rateLimitConfigured:Boolean(env.USER_LIMITER&&env.GLOBAL_LIMITER)});
     if(path!=='/api/youtube')return error('not-found','Route introuvable.');
     if(request.method!=='POST')return json({error:{code:'method-not-allowed',message:'Utilisez POST.'}},405,{Allow:'POST, OPTIONS'});
     const authorization=request.headers.get('Authorization')||'';
@@ -32,7 +32,7 @@ export function createWorker({verifyToken=verifyFirebaseToken,fetchImpl=fetch}={
       data=JSON.parse(new TextDecoder().decode(bytes));
     }catch{return error('invalid-argument','Requête JSON invalide ou trop volumineuse.');}
     try{
-      if(!services.has(env))services.set(env,createService({apiKey:()=>env.YOUTUBE_API_KEY,fetchImpl,async consume(uid,cost){
+      if(!services.has(env))services.set(env,createService({apiKey:()=>env.YOUTUBE_API_KEY.trim(),fetchImpl,async consume(uid,cost){
         if(!(await env.USER_LIMITER.limit({key:uid})).success)throw Object.assign(new Error('Trop de demandes pour ce compte. Réessayez dans une minute.'),{code:'resource-exhausted'});
         if(cost&&!(await env.GLOBAL_LIMITER.limit({key:'youtube'})).success)throw Object.assign(new Error('Le service reçoit trop de demandes. Réessayez dans une minute.'),{code:'resource-exhausted'});
       }}));

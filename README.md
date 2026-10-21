@@ -88,7 +88,7 @@ Tests cover catalogue navigation, user-specific filtering, account changes, expl
 
 ## YouTube integration
 
-The Worker imports playlist pages, resolves channel uploads and filters titles and descriptions by normalized keywords. The frontend allows personal rules, manual additions, authenticated imports and archive pagination. Search currently filters the imported catalogue; global YouTube search remains a future feature. API metadata stays in tab/server memory, while Firestore stores personal selections and video references.
+The Worker imports playlist pages, resolves channel uploads and filters titles and descriptions by normalized keywords. The frontend allows personal rules, manual additions, authenticated import previews with per-video selection, archive pagination and private video removals. Search currently filters the imported catalogue; global YouTube search remains a future feature. API metadata stays in tab/server memory, while Firestore stores personal selections and video references.
 
 See [YOUTUBE_SETUP.md](YOUTUBE_SETUP.md) for deployment, limits and current coverage. GitHub Pages deploys only public frontend assets; Worker source and development files are excluded from the Pages artifact.
 
