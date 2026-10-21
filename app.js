@@ -71,6 +71,8 @@ function renderImportPreview(showId){
   if(activeImportId!==showId)return;
   const show=showFor(showId),progress=youtubeImports.get(showId);
   if(!show||!progress)return;
+  const scrollTop=document.querySelector('.import-results')?.scrollTop||0;
+  const focusedVideo=document.activeElement?.dataset?.importVideo;
   const selected=progress.candidates.filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
   const rows=progress.candidates.map(episode=>{
     const existing=state.episodes.find(item=>item.id===episode.id);
@@ -78,6 +80,8 @@ function renderImportPreview(showId){
     return `<article class="import-row"><label class="import-choice"><input type="checkbox" data-import-video="${episode.id}" ${progress.selected.has(episode.id)&&!imported?'checked':''} ${imported||progress.committing?'disabled':''}><span class="sr-only">Sélectionner ${escapeHtml(episode.title)}</span></label>${imageTag(episode.id)}<div class="import-description"><strong>${escapeHtml(episode.title)}</strong><p class="small">${escapeHtml(episode.author||show.channel)}${episode.durationLabel?` · ${escapeHtml(episode.durationLabel)}`:''}${episode.publishedAt?` · ${new Date(episode.publishedAt).toLocaleDateString('fr-FR')}`:''}</p><span class="import-badge ${imported?'imported':''}">${imported?`Déjà présente dans ${escapeHtml(showFor(existing.showId)?.name||'votre bibliothèque')}`:hidden?'Retirée de votre bibliothèque · réimportation possible':'Nouvelle vidéo'}</span></div><a class="text-button" href="https://www.youtube.com/watch?v=${episode.id}" target="_blank" rel="noopener noreferrer">Voir ↗</a>${imported?`<button class="text-button danger" data-remove-video="${episode.id}" ${progress.committing?'disabled':''}>Retirer</button>`:''}</article>`;
   }).join('');
   modalContent.innerHTML=modalHeading(`Importer depuis YouTube · ${escapeHtml(show.name)}`)+`<p class="small">${escapeHtml(progress.message)}</p><p class="hint">Aucune vidéo n’est ajoutée avant votre confirmation. Les vidéos déjà présentes sont indiquées ; celles que vous avez retirées restent décochées.</p><div class="import-toolbar"><span>${progress.candidates.length} vidéos trouvées · <strong>${selected.length} sélectionnées</strong></span><div class="actions"><button data-action="import-select-all" ${progress.committing?'disabled':''}>Tout sélectionner</button><button data-action="import-select-none" ${progress.committing?'disabled':''}>Tout désélectionner</button></div></div><div class="import-results">${rows||`<p class="empty">${progress.busy?'Recherche des vidéos…':'Aucune vidéo sur les pages analysées.'}</p>`}</div><p class="form-error" role="alert">${escapeHtml(progress.error||'')}</p><div class="import-footer"><button data-close ${progress.committing?'disabled':''}>Fermer</button>${progress.next?`<button data-youtube="${escapeHtml(showId)}" data-continue="true" ${progress.busy||progress.committing?'disabled':''}>Charger la suite</button>`:''}<button class="primary" data-action="confirm-youtube-import" ${!selected.length||progress.busy||progress.committing?'disabled':''}>${progress.committing?'Import en cours…':`Importer la sélection (${selected.length})`}</button></div>`;
+  const results=document.querySelector('.import-results');if(results)results.scrollTop=scrollTop;
+  if(focusedVideo)document.querySelector(`[data-import-video="${focusedVideo}"]`)?.focus?.({preventScroll:true});
 }
 async function refreshYoutube(showId,continuing=false){
   const show=showFor(showId),previous=youtubeImports.get(showId);
