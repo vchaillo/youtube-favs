@@ -43,3 +43,9 @@ test('late API responses are ignored after account changes and errors remain act
   const limited=api.createClient({storage:storage(),fetchImpl:async()=>Response.json({error:{code:'resource-exhausted',message:'Quota atteint'}},{status:429})});
   await assert.rejects(limited.call({}, {getToken:async()=> 'token',isCurrent:()=>true}),{code:'resource-exhausted',message:'Quota atteint'});
 });
+
+test('channel-name lookups accept channel result arrays through the same authenticated transport',async()=>{
+  const client=api.createClient({storage:storage(),fetchImpl:async()=>Response.json({channels:[{id:'UC1234567890123456789012',name:'Example',url:'https://www.youtube.com/channel/UC1234567890123456789012'}]})});
+  const result=await client.call({action:'channels',query:'Example'},{getToken:async()=> 'token',isCurrent:()=>true});
+  assert.equal(result.channels[0].name,'Example');
+});

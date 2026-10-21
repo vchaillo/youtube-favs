@@ -49,7 +49,7 @@ globalThis.YouTubeFavsApi=(()=>{
           if(!valid())throw fail('session-changed','La session a changé.');
           if(response.status===401&&attempt===0)continue;
           if(!response.ok)throw fail(body.error?.code||'worker-error',body.error?.message||'La récupération YouTube a échoué.');
-          if(!Array.isArray(body.episodes))throw fail('worker-error','Réponse du Worker invalide.');
+          if(!Array.isArray(data.action==='channels'?body.channels:body.episodes))throw fail('worker-error','Réponse du Worker invalide.');
           return body;
         }
       },

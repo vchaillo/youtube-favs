@@ -22,6 +22,7 @@ const provider=new GoogleAuthProvider();
 provider.setCustomParameters({prompt:'select_account'});
 const model=globalThis.YouTubeFavsState;
 let session=null,unsubscribe=null,generation=0;
+let youtubeQueue=Promise.resolve(),nextYoutubeAt=0;
 function emit(type,detail){window.dispatchEvent(new CustomEvent(`youtube-favs:${type}`,{detail}));}
 function identity(user){return user?{uid:user.uid,displayName:user.displayName||'',email:user.email||'',photoURL:user.photoURL||''}:null;}
 function errorMessage(error){
@@ -76,10 +77,18 @@ globalThis.youtubeFavsCloud={
   async youtube(data){
     const owner=auth.currentUser,current=generation;
     if(!owner)throw Object.assign(new Error('Connectez-vous pour actualiser YouTube.'),{code:'session-changed'});
-    return youtubeClient.call(data,{
-      getToken:refresh=>owner.getIdToken(refresh),
-      isCurrent:()=>generation===current&&auth.currentUser?.uid===owner.uid,
+    const operation=youtubeQueue.then(async()=>{
+      if(generation!==current||auth.currentUser?.uid!==owner.uid)throw Object.assign(new Error('Session changed.'),{code:'session-changed'});
+      const delay=Math.max(0,nextYoutubeAt-Date.now());
+      if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+      nextYoutubeAt=Date.now()+2200;
+      return youtubeClient.call(data,{
+        getToken:refresh=>owner.getIdToken(refresh),
+        isCurrent:()=>generation===current&&auth.currentUser?.uid===owner.uid,
+      });
     });
+    youtubeQueue=operation.catch(()=>{});
+    return operation;
   },
   async signIn(){try{await signInWithPopup(auth,provider);}catch(error){emit('login-error',{message:errorMessage(error)});}},
   async signOut(){

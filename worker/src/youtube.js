@@ -23,6 +23,10 @@ export function googleFailure(body,status){
 }
 export function parseRequest(data){
   if(!data||typeof data!=='object')throw fail('invalid-argument','Requête invalide.');
+  if(data.action==='channels'){
+    if(typeof data.query!=='string'||!data.query.trim()||data.query.length>100)throw fail('invalid-argument','Saisissez un nom de chaîne de 100 caractères maximum.');
+    return {action:'channels',query:data.query.trim()};
+  }
   if(data.action==='videos'){
     if(!Array.isArray(data.ids)||!data.ids.length||data.ids.length>50||data.ids.some(id=>typeof id!=='string'||!VIDEO.test(id)))throw fail('invalid-argument','Entre 1 et 50 identifiants vidéo sont nécessaires.');
     return {action:'videos',ids:[...new Set(data.ids)].sort()};
@@ -30,7 +34,7 @@ export function parseRequest(data){
   if(data.action!=='catalog'||!['playlist','channel','keywords'].includes(data.mode))throw fail('invalid-argument','Méthode de suivi invalide.');
   let source;try{source=new URL(data.source);}catch{throw fail('invalid-argument','Lien YouTube invalide.');}
   if(source.protocol!=='https:'||!['youtube.com','www.youtube.com','m.youtube.com'].includes(source.hostname)||source.username||source.password||source.port)throw fail('invalid-argument','Utilisez un lien HTTPS youtube.com.');
-  const result={action:'catalog',mode:data.mode,pageToken:data.pageToken||'',keywords:[]};
+  const result={action:'catalog',mode:data.mode,pageToken:data.pageToken||'',keywords:[],refresh:data.refresh===true};
   if(typeof result.pageToken!=='string'||result.pageToken.length>512||!/^[-\w=]*$/.test(result.pageToken))throw fail('invalid-argument','Page invalide. Recommencez l’import.');
   if(data.mode==='playlist'){
     result.playlistId=source.searchParams.get('list');
@@ -57,7 +61,7 @@ export function durationLabel(value=''){
   return hours?`${hours}:${String(minutes).padStart(2,'0')}:${last}`:`${minutes}:${last}`;
 }
 function metadata(video){
-  return {id:video.id,title:(video.snippet?.title||'Vidéo YouTube').slice(0,200),author:(video.snippet?.channelTitle||'').slice(0,100),publishedAt:video.snippet?.publishedAt||'',durationLabel:durationLabel(video.contentDetails?.duration),embeddable:video.status?.embeddable!==false};
+  return {id:video.id,title:(video.snippet?.title||'Vidéo YouTube').slice(0,200),author:(video.snippet?.channelTitle||'').slice(0,100),publishedAt:video.snippet?.publishedAt||'',channelId:video.snippet?.channelId||'',durationLabel:durationLabel(video.contentDetails?.duration),embeddable:video.status?.embeddable!==false};
 }
 export function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
   const cache=new Map();
@@ -72,7 +76,7 @@ export function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
   }
   async function videos(ids){
     if(!ids.length)return [];
-    const data=await google('videos',{part:'snippet,contentDetails,status',id:ids.join(','),fields:'items(id,snippet(title,description,channelTitle,publishedAt),contentDetails(duration),status(embeddable))'});
+    const data=await google('videos',{part:'snippet,contentDetails,status',id:ids.join(','),fields:'items(id,snippet(title,description,channelTitle,channelId,publishedAt),contentDetails(duration),status(embeddable))'});
     return data.items||[];
   }
   return async function handle(request){
@@ -82,24 +86,32 @@ export function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
     if(!apiKey())throw fail('failed-precondition','La clé YouTube doit être configurée dans les secrets Cloudflare.');
     const key=JSON.stringify(input);
     const hit=cache.get(key);
-    const cached=hit&&hit.expires>now();
+    const cached=!input.refresh&&hit&&hit.expires>now();
     // Reserve an upper bound before requests, including failed upstream calls.
     await consume(request.auth.uid,cached?0:input.action==='videos'?1:input.channel?3:2);
     if(cached)return {...structuredClone(hit.value),cached:true};
     let result;
-    if(input.action==='videos')result={episodes:(await videos(input.ids)).map(metadata),nextPageToken:null,scanned:input.ids.length};
+    if(input.action==='channels'){
+      const direct=input.query.startsWith('@');
+      const found=await google(direct?'channels':'search',direct?{part:'snippet',forHandle:input.query,fields:'items(id,snippet(title))'}:{part:'snippet',type:'channel',q:input.query,maxResults:5,fields:'items(id(channelId),snippet(title,channelTitle))'});
+      result={channels:(found.items||[]).map(item=>({id:direct?item.id:item.id?.channelId,name:item.snippet?.title||item.snippet?.channelTitle||''})).filter(channel=>/^UC[\w-]{22}$/.test(channel.id||'')).map(channel=>({...channel,url:`https://www.youtube.com/channel/${channel.id}`}))};
+    }
+    else if(input.action==='videos')result={episodes:(await videos(input.ids)).map(metadata),nextPageToken:null,scanned:input.ids.length};
     else{
-      let playlistId=input.playlistId;
+      let playlistId=input.playlistId,channelId='';
       if(input.channel){
-        const channels=await google('channels',{part:'contentDetails',...input.channel,fields:'items(contentDetails(relatedPlaylists(uploads)))'});
+        const channels=await google('channels',{part:'contentDetails',...input.channel,fields:'items(id,contentDetails(relatedPlaylists(uploads)))'});
+        channelId=channels.items?.[0]?.id||'';
         playlistId=channels.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
         if(!playlistId)throw fail('not-found','Cette chaîne est introuvable ou ne publie pas de vidéos.');
       }
-      const page=await google('playlistItems',{part:'contentDetails',playlistId,maxResults:50,pageToken:input.pageToken,fields:'nextPageToken,pageInfo(totalResults),items(contentDetails(videoId))'});
+      const page=await google('playlistItems',{part:'snippet,contentDetails',playlistId,maxResults:50,pageToken:input.pageToken,fields:'nextPageToken,pageInfo(totalResults),items(snippet(channelId),contentDetails(videoId))'});
+      if(!channelId)channelId=page.items?.[0]?.snippet?.channelId||'';
       const ids=[...new Set((page.items||[]).map(item=>item.contentDetails?.videoId).filter(id=>VIDEO.test(id||'')))];
       const items=await videos(ids);
       const selected=input.mode==='keywords'?items.filter(v=>input.keywords.some(keyword=>normalize(`${v.snippet?.title||''} ${v.snippet?.description||''}`).includes(keyword))):items;
-      result={episodes:selected.map(metadata),nextPageToken:page.nextPageToken||null,scanned:(page.items||[]).length,total:page.pageInfo?.totalResults||0};
+      const published=items.map(item=>item.snippet?.publishedAt).filter(value=>Number.isFinite(Date.parse(value))).sort();
+      result={channelId,oldestPublishedAt:published[0]||'',newestPublishedAt:published.at(-1)||'',episodes:selected.map(metadata),nextPageToken:page.nextPageToken||null,scanned:(page.items||[]).length,total:page.pageInfo?.totalResults||0};
     }
     result.fetchedAt=new Date(now()).toISOString();
     // Metadata is held in memory for 15 minutes only; no API titles in Firestore.

@@ -85,3 +85,23 @@ test('Google errors distinguish service activation, key restrictions and invalid
     await assert.rejects(service({auth,data:catalog}),error=>error.code==='failed-precondition'&&error.message.includes(reason)&&error.message.includes(message)&&!error.message.includes('secret-key'));
   }
 });
+
+test('channel name lookup returns selectable canonical URLs without importing a guessed channel',async()=>{
+  const channelId='UC1234567890123456789012';let url;
+  const {service}=fixture({fetchImpl:async request=>{url=request;return {ok:true,json:async()=>({items:[{id:{channelId},snippet:{title:'Actual channel'}}]})};}});
+  const response=await service({auth,data:{action:'channels',query:'A channel name'}});
+  assert.equal(url.pathname.endsWith('/search'),true);assert.equal(url.searchParams.get('type'),'channel');
+  assert.deepEqual(response.channels,[{id:channelId,name:'Actual channel',url:`https://www.youtube.com/channel/${channelId}`}]);
+});
+test('handles resolve directly and malformed channel queries are rejected before Google calls',async()=>{
+  let calls=0;
+  const {service}=fixture({fetchImpl:async url=>{calls++;assert.equal(url.searchParams.get('forHandle'),'@example');return {ok:true,json:async()=>({items:[{id:'UC1234567890123456789012',snippet:{title:'Example'}}]})};}});
+  await service({auth,data:{action:'channels',query:'@example'}});
+  await assert.rejects(service({auth,data:{action:'channels',query:''}}),{code:'invalid-argument'});assert.equal(calls,1);
+});
+test('new-release requests explicitly bypass cached pages and expose chronology and source channel identity',async()=>{
+  const {service,calls}=fixture();
+  await service({auth,data:catalog});const first=calls.length;
+  const result=await service({auth,data:{...catalog,refresh:true}});
+  assert.equal(calls.length,first+2);assert.equal(result.oldestPublishedAt,'2026-10-21T10:00:00Z');
+});

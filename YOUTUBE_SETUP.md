@@ -82,7 +82,7 @@ Ce contrôle vérifie la configuration déclarée, pas la validité de la clé c
 5. Ouvrir **Papy Grenier** et cliquer sur **Importer depuis YouTube**. Une prévisualisation affiche les vidéos trouvées : cocher les vidéos souhaitées puis confirmer avec **Importer la sélection**. Aucun ajout n’est effectué avant cette confirmation.
 6. Tester **Rhinocéros** et **Esquive la Boule de Feu**. Dans la prévisualisation, utiliser **Charger la suite** pour parcourir les archives jusqu'au message **Dernière page atteinte**.
 
-La connexion Google et les règles [firestore.rules](firestore.rules) existantes restent nécessaires. Si la bibliothèque fonctionne déjà, aucune modification Firebase n'est requise. L'URL du Worker est une configuration locale publique ; suivis, favoris et épisodes vus restent sauvegardés dans le compte Firebase.
+La connexion Google et les règles [firestore.rules](firestore.rules) existantes restent nécessaires. Si la bibliothèque fonctionne déjà, aucune modification Firebase n'est requise. L'URL du Worker est une configuration locale publique ; émissions importées et épisodes vus restent sauvegardés dans le compte Firebase.
 
 ## Autre méthode : déployer depuis son ordinateur
 
@@ -104,7 +104,7 @@ La dernière commande demande la clé de manière interactive et publie une nouv
 - La clé YouTube n'est jamais renvoyée au frontend. La route `POST /api/youtube` exige une session valide. CORS accepte seulement `https://vchaillo.github.io` ; CORS ne remplace pas la vérification du jeton.
 - `action: "catalog"` accepte une playlist, une chaîne complète ou une sélection par mots-clés ; `action: "videos"` accepte jusqu'à 50 identifiants pour recharger les métadonnées. Les sources sont limitées à YouTube : aucune URL de destination arbitraire n'est acceptée par le proxy.
 - Sources de chaîne : `/@identifiant`, `/channel/UC…` et `/user/…`. Une page analyse au maximum 50 publications. Les mots-clés séparés par des virgules sont comparés au titre et à la description, sans distinction d'accents ou de majuscules.
-- La récupération est déclenchée à la demande, sans GitHub Action de catalogue ni tâche Firebase planifiée. La recherche globale YouTube n'est pas encore une interface de cette version ; le champ de recherche existant filtre le catalogue déjà importé. Les nouvelles sources peuvent être ajoutées par leur lien dans « Suivre une émission ».
+- La récupération est déclenchée à la demande, sans GitHub Action de catalogue ni tâche Firebase planifiée. La recherche globale YouTube n'est pas encore une interface de cette version ; le champ de recherche existant filtre le catalogue déjà importé. Les chaînes peuvent être recherchées par nom en mode mots-clés, puis confirmées avant import. Les chaînes déjà importées sont proposées dans le formulaire.
 - Les limites natives Cloudflare sont de 30 demandes/minute/compte et 60 pages non mises en cache/minute pour l'application, **par emplacement Cloudflare**. Elles sont approximatives et ne constituent pas un compteur mondial strict ni un budget journalier. Le quota Google Cloud reste la limite globale de l'API YouTube. Les namespaces de ces deux bindings sont propres à youtube-favs.
 - Cache en mémoire : 15 minutes, 128 pages maximum par instance. Il peut disparaître au redémarrage ou différer entre instances. Les métadonnées API ne sont pas copiées dans Firestore ; seuls les identifiants et les choix personnels sont sauvegardés. Le catalogue historique fourni dans le dépôt reste un relevé statique distinct.
 - Limite actuelle : 1 000 ajouts et retraits personnels par compte, en plus du catalogue initial. Une vidéo reste rattachée à une seule émission. L'import est additif et ne supprime pas les anciens ajouts lorsque les règles changent.
@@ -138,7 +138,7 @@ Les retraits sont stockés comme références privées marquées dans le documen
 
 ## Dépanner une erreur de clé YouTube
 
-L’ancien message « La clé ou l’activation de YouTube Data API doit être vérifiée côté serveur » regroupait plusieurs erreurs Google. Mettre le Worker à jour depuis la branche `main` pour obtenir le motif précis. `/health` doit annoncer la version `2026-10-21-import-preview` ; ce contrôle seul ne vérifie pas la validité de la clé chez Google.
+L’ancien message « La clé ou l’activation de YouTube Data API doit être vérifiée côté serveur » regroupait plusieurs erreurs Google. Mettre le Worker à jour depuis la branche `main` pour obtenir le motif précis. `/health` doit annoncer la version `2026-10-21-library` ; ce contrôle seul ne vérifie pas la validité de la clé chez Google.
 
 Dans **Mon profil**, **Tester l’accès à YouTube** effectue une véritable lecture de vidéo publique avec la clé conservée dans le Worker. Le résultat permet de distinguer :
 
@@ -152,3 +152,18 @@ Dans **Mon profil**, **Tester l’accès à YouTube** effectue une véritable le
 | `forbidden` | Vérifier les restrictions de la clé et le caractère public de la source. Ce motif seul ne prouve pas que la clé est invalide. |
 
 Le projet de la clé YouTube peut être distinct du projet Firebase : c’est le projet de la **clé YouTube** qui doit avoir l’API activée. Ne jamais envoyer la clé dans une discussion pour diagnostiquer le problème. Les messages affichent uniquement des motifs reconnus ; aucune URL Google brute ni valeur de secret n’est exposée.
+
+
+## Bibliothèque et nouveautés
+
+La bibliothèque est vide à la première connexion. Les imports existants sont conservés ; toutes les émissions de la bibliothèque sont suivies automatiquement. Les vues Chaînes, Émissions et Épisodes remplacent Explorer / Mes suivis. Les favoris sont retirés de l’interface.
+
+Le formulaire propose les noms des chaînes déjà importées. En mode **Chaîne + mots-clés**, le lien est facultatif : le Worker recherche le nom ou le @identifiant et l’utilisateur confirme la chaîne. Les modes **Playlist** et **Chaîne entière** nécessitent toujours leur lien. Le Worker utilise l’action `channels` pour cette recherche ; une nouvelle version doit être déployée depuis `main`.
+
+L’import par mots-clés parcourt automatiquement les pages jusqu’à cinq pages consécutives sans résultat (250 publications), ou jusqu’à la fin de la chaîne. Le bouton de continuation reprend à la page suivante. Le statut vu/non vu se choisit pour la sélection entière ou vidéo par vidéo. La couverture est tirée d’une vidéo importée.
+
+À chaque entrée dans **À voir**, les sources sont vérifiées par le Worker avec un rafraîchissement explicite. Les vidéos publiées après le précédent import / contrôle sont ajoutées automatiquement comme nouveautés non vues ; les retraits personnels ne sont pas annulés. Les publications historiques ajoutées tardivement à une playlist ne sont pas considérées comme des sorties récentes et restent disponibles par import manuel. Les nouvelles sorties et le reste des épisodes non vus sont affichés séparément. Une source en erreur ne bloque pas la lecture des vidéos existantes ni les autres sources.
+
+La lecture de l’épisode se charge dès l’ouverture de la modale. Le navigateur peut limiter la lecture automatique avec le son ; le lecteur lui-même est déjà chargé. Les règles de confidentialité et restrictions YouTube continuent de s’appliquer.
+
+Les appels sont espacés pour respecter le Worker : un parcours de 250 publications demande donc plusieurs secondes. Les métadonnées, compteurs de progression et erreurs sont affichés pendant la recherche. Aucun changement de règles Firebase n’est requis pour cette évolution.

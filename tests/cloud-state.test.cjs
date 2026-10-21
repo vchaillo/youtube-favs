@@ -8,7 +8,7 @@ const videoA='V34x1CxlAZ0',videoB='MatN8AsTDCs';
 test('private payload excludes the public catalogue and starts with no subscriptions',()=>{
   const catalogue={shows:[{id:'papy',name:'Papy',mode:'playlist'}],episodes:[{id:videoA,showId:'papy',title:'Public'}]};
   const state=model.hydrate(model.empty(),catalogue);
-  assert.equal(state.shows.length,1);assert.deepEqual(state.following,[]);
+  assert.equal(state.shows.length,0);assert.equal(state.episodes.length,0);assert.deepEqual(state.following,[]);
   assert.deepEqual(model.pack(state,catalogue),model.empty());
 });
 
@@ -80,12 +80,12 @@ test('API references persist without retaining YouTube metadata',()=>{
 
 test('private removals override bundled records and survive unrelated edits without copying metadata',()=>{
   const catalogue={shows:[{id:'papy'}],episodes:[{id:videoA,showId:'papy',title:'Shared title',author:'Shared author'}]};
-  const initial=model.hydrate(model.empty(),catalogue);initial.episodes[0].hidden=true;
+  const initial=model.hydrate({...model.empty(),following:['papy']},catalogue);initial.episodes[0].hidden=true;
   const packed=model.pack(initial,catalogue);
   assert.equal(packed.episodes[0].hidden,true);assert.equal(packed.episodes[0].title,'Vidéo retirée');
   assert.equal(packed.episodes[0].author,undefined);
   const restored=model.hydrate(packed,catalogue);assert.equal(restored.episodes[0].hidden,true);
   restored.theme='light';assert.equal(model.pack(restored,catalogue).episodes[0].hidden,true);
   restored.episodes[0].hidden=false;assert.equal(model.pack(restored,catalogue).episodes.length,0);
-  assert.equal(model.hydrate(model.empty(),catalogue).episodes[0].hidden,undefined);
+  assert.equal(model.hydrate(model.empty(),catalogue).episodes.length,0);
 });

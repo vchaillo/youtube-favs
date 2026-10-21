@@ -1,6 +1,6 @@
 'use strict';
 
-// Only private selections and custom records belong in Firestore. The public catalogue stays bundled.
+// Preserve the existing Firestore document shape while migrating to a private imported library.
 globalThis.YouTubeFavsState = (() => {
   const listFields = ['following','favorites','watched','queue'];
   const recordFields = ['shows','episodes'];
@@ -24,29 +24,29 @@ globalThis.YouTubeFavsState = (() => {
       const pattern=key==='following'?idPattern:videoPattern;
       result[key]=unique((Array.isArray(value[key])?value[key]:[]).filter(id=>typeof id==='string'&&pattern.test(id))).slice(0,key==='following'?1000:5000);
     }
-    result.shows=unique((Array.isArray(value.shows)?value.shows:[]).filter(show=>show&&typeof show.id==='string'&&idPattern.test(show.id)&&typeof show.name==='string'&&typeof show.channel==='string'&&['keywords','playlist','channel'].includes(show.mode)&&safeSource(show.source)).map(show=>({id:show.id,name:cleanText(show.name,100),channel:cleanText(show.channel,100),source:safeSource(show.source),mode:show.mode,keywords:cleanText(show.keywords),description:cleanText(show.description,500),initials:cleanText(show.initials,8),category:cleanText(show.category,60)||'Personnel',cover:videoPattern.test(show.cover||'')?show.cover:'',customRule:true})),'id').slice(0,200);
-    result.episodes=unique((Array.isArray(value.episodes)?value.episodes:[]).filter(episode=>episode&&typeof episode.id==='string'&&typeof episode.showId==='string'&&videoPattern.test(episode.id)&&idPattern.test(episode.showId)&&typeof episode.title==='string').map(episode=>({id:episode.id,showId:episode.showId,title:episode.hidden===true?'Vidéo retirée':episode.apiImported===true?'Vidéo YouTube':cleanText(episode.title),...(episode.hidden===true?{hidden:true}:{}),...(episode.apiImported===true?{apiImported:true}:{}),note:cleanText(episode.note,500),added:Number.isSafeInteger(episode.added)?episode.added:0})),'id').slice(0,1000);
+    result.shows=unique((Array.isArray(value.shows)?value.shows:[]).filter(show=>show&&typeof show.id==='string'&&idPattern.test(show.id)&&typeof show.name==='string'&&typeof show.channel==='string'&&['keywords','playlist','channel'].includes(show.mode)&&safeSource(show.source)).map(show=>({id:show.id,name:cleanText(show.name,100),channel:cleanText(show.channel,100),source:safeSource(show.source),mode:show.mode,keywords:cleanText(show.keywords),description:cleanText(show.description,500),initials:cleanText(show.initials,8),category:cleanText(show.category,60)||'Personnel',cover:videoPattern.test(show.cover||'')?show.cover:'',...(typeof show.channelId==='string'&&/^UC[\w-]{22}$/.test(show.channelId)?{channelId:show.channelId}:{}),...(safeSource(show.channelSource)?{channelSource:safeSource(show.channelSource)}:{}),...(typeof show.releaseAfter==='string'&&Number.isFinite(Date.parse(show.releaseAfter))?{releaseAfter:new Date(show.releaseAfter).toISOString()}:{}),customRule:true})),'id').slice(0,200);
+    result.episodes=unique((Array.isArray(value.episodes)?value.episodes:[]).filter(episode=>episode&&typeof episode.id==='string'&&typeof episode.showId==='string'&&videoPattern.test(episode.id)&&idPattern.test(episode.showId)&&typeof episode.title==='string').map(episode=>({id:episode.id,showId:episode.showId,title:episode.hidden===true?'Vidéo retirée':episode.apiImported===true?'Vidéo YouTube':cleanText(episode.title),...(episode.hidden===true?{hidden:true}:{}),...(episode.apiImported===true?{apiImported:true}:{}),...(episode.newRelease===true?{newRelease:true}:{}),note:cleanText(episode.note,500),added:Number.isSafeInteger(episode.added)?episode.added:0})),'id').slice(0,1000);
     result.view=value.view==='list'?'list':'grid';
     result.theme=value.theme==='light'?'light':'dark';
     result.accent=/^#[a-fA-F0-9]{6}$/.test(value.accent||'')?value.accent:result.accent;
     return result;
   }
   function pack(state,catalogue) {
-    const showIds=new Set(catalogue.shows.map(show=>show.id));
-    const episodeIds=new Set(catalogue.episodes.map(episode=>episode.id));
-    return sanitize({...state,shows:(Array.isArray(state?.shows)?state.shows:[]).filter(show=>show&&(!showIds.has(show.id)||show.customRule)),episodes:(Array.isArray(state?.episodes)?state.episodes:[]).filter(episode=>episode&&(!episodeIds.has(episode.id)||episode.hidden===true))});
+    const bundled=new Set(catalogue.episodes.map(episode=>`${episode.showId}/${episode.id}`));
+    return sanitize({...state,following:(state.shows||[]).map(show=>show.id),favorites:[],queue:[],shows:state.shows||[],episodes:(state.episodes||[]).filter(episode=>episode&&(!bundled.has(`${episode.showId}/${episode.id}`)||episode.hidden===true||episode.newRelease===true))});
   }
   function hydrate(raw,catalogue) {
     const privateState=sanitize(raw);
+    // Legacy followed programmes and explicitly imported records remain available; new accounts stay empty.
+    const owned=new Set([...privateState.following,...privateState.shows.map(show=>show.id),...privateState.episodes.map(episode=>episode.showId)]);
     const overrides=new Map(privateState.shows.map(show=>[show.id,show]));
-    const shows=catalogue.shows.map(show=>({...structuredClone(show),...(overrides.get(show.id)||{})}));
+    const shows=catalogue.shows.filter(show=>owned.has(show.id)).map(show=>({...structuredClone(show),...(overrides.get(show.id)||{}),customRule:true}));
     const ids=new Set(shows.map(show=>show.id));
     shows.push(...privateState.shows.filter(show=>!ids.has(show.id)));
-    const episodeIds=new Set(catalogue.episodes.map(episode=>episode.id));
-    const episodeMap=new Map(structuredClone(catalogue.episodes).map(episode=>[episode.id,episode]));
-    for(const episode of privateState.episodes)if(!episodeIds.has(episode.id)||episode.hidden)episodeMap.set(episode.id,{...(episodeMap.get(episode.id)||{}),...episode});
+    const episodeMap=new Map(structuredClone(catalogue.episodes).filter(episode=>owned.has(episode.showId)).map(episode=>[episode.id,episode]));
+    for(const episode of privateState.episodes)episodeMap.set(episode.id,{...(episodeMap.get(episode.id)||{}),...episode});
     const episodes=[...episodeMap.values()].filter(episode=>shows.some(show=>show.id===episode.showId));
-    return {...privateState,shows,episodes};
+    return {...privateState,following:shows.map(show=>show.id),favorites:[],queue:[],shows,episodes};
   }
   function diff(previous,next) {
     const before=sanitize(previous),after=sanitize(next),patch={lists:{},records:{},preferences:{}};

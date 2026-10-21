@@ -11,6 +11,6 @@ npm run deploy
 npx wrangler secret put YOUTUBE_API_KEY
 ```
 
-Deploy using the included `wrangler.toml`; both native rate-limiter bindings are mandatory. `GET /health` is public and reports configuration booleans only. `POST /api/youtube` requires `Authorization: Bearer <Firebase ID token>` and accepts the existing `catalog` and `videos` actions. Responses are never browser-cached.
+Deploy using the included `wrangler.toml`; both native rate-limiter bindings are mandatory. `GET /health` is public and reports configuration booleans only. `POST /api/youtube` requires `Authorization: Bearer <Firebase ID token>` and accepts `catalog`, `videos` and `channels` actions. The `2026-10-21-library` version adds selectable channel-name results, source channel IDs, fresh catalogue checks and chronological page bounds. Responses are never browser-cached.
 
 `npm run check` assembles the Worker without publishing it. No Node server, Firebase Admin credentials, Blaze plan or private database access is needed. Keep API keys out of source files, logs, build variables and frontend bundles.

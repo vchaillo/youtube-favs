@@ -49,3 +49,10 @@ test('updates require a new revision and accept the transaction used by the app'
  }));
  await assertSucceeds(deleteDoc(reference(db)));
 });
+
+test('the existing rules accept private library source watermarks and episode novelty flags',async()=>{
+ const db=environment.authenticatedContext('alice').firestore();
+ await assertSucceeds(setDoc(reference(db),state({following:['program'],shows:[{id:'program',name:'Programme',channel:'Channel',mode:'keywords',source:'https://www.youtube.com/@example',keywords:'show',releaseAfter:'2026-10-21T00:00:00.000Z',cover:'AAAAAAAAAAA'}],episodes:[{id:'AAAAAAAAAAA',showId:'program',title:'Vidéo YouTube',apiImported:true,newRelease:true,added:1}]})));
+ await assertSucceeds(getDoc(reference(db)));
+ const bob=environment.authenticatedContext('bob').firestore();await assertFails(getDoc(reference(bob)));
+});
