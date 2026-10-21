@@ -1,56 +1,128 @@
-# Activer la récupération YouTube
+# Connecter youtube-favs à Cloudflare Workers
 
-Le frontend est sur https://vchaillo.github.io/youtube-favs/. La fonction callable `youtubeCatalog` est préparée pour le projet Firebase **yt-favs-b05e1**, région **europe-west1**. Le frontend appelle automatiquement cette fonction ; aucune URL à saisir et aucune clé YouTube dans le navigateur.
+Le site reste sur **GitHub Pages**. Firebase **Spark** conserve la connexion Google et les bibliothèques personnelles. Le **Worker Cloudflare** interroge YouTube et garde la clé API côté serveur. Cette configuration n'utilise pas Firebase Functions, Secret Manager ou le forfait Blaze.
 
-## Configuration à faire une seule fois
+## 1. Activer l'API YouTube et créer une clé serveur
 
-1. Dans [Google Cloud](https://console.cloud.google.com/apis/library/youtube.googleapis.com?project=yt-favs-b05e1), activer **YouTube Data API v3** sur le même projet.
-2. Dans [Identifiants](https://console.cloud.google.com/apis/credentials?project=yt-favs-b05e1), créer une **nouvelle clé API serveur** et limiter ses restrictions d’API à **YouTube Data API v3**. Ne pas réutiliser la clé Web Firebase. Une restriction de référent HTTP ne convient pas aux appels serveur. Si une restriction IP est souhaitée, il faut configurer une sortie réseau à IP fixe séparément.
-3. Le déploiement Cloud Functions nécessite le forfait Firebase **Blaze** et un compte de facturation. Vérifier les coûts et configurer une alerte de budget. Les limites applicatives ci-dessous protègent le quota YouTube, elles ne constituent pas un plafond de facturation Firebase.
-4. Depuis la racine du dépôt, avec Node.js 22 :
+1. Ouvrir [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com?project=yt-favs-b05e1). Vérifier que le projet est **yt-favs-b05e1**, puis cliquer sur **Activer** si nécessaire.
+2. Ouvrir [API et services → Identifiants](https://console.cloud.google.com/apis/credentials?project=yt-favs-b05e1), puis **Créer des identifiants → Clé API**.
+3. Nommer la clé `youtube-favs-cloudflare` et restreindre les **API autorisées** à **YouTube Data API v3**.
+4. Laisser les **restrictions d'application** sur **Aucune** pour ce Worker, qui n'a pas d'IP de sortie fixe. Une restriction par référent de site web ne convient pas à ces appels serveur. Ne pas réutiliser la clé Web Firebase.
+5. Garder la clé pour l'étape 3. Ne pas la mettre dans un fichier du dépôt, dans le frontend ou dans une discussion.
 
-```sh
-npm ci --ignore-scripts --no-audit --no-fund
-npm ci --prefix functions --ignore-scripts --no-audit --no-fund
-npx firebase login
-npx firebase functions:secrets:set YOUTUBE_API_KEY --project yt-favs-b05e1
-npx firebase deploy --only functions:youtubeCatalog --project yt-favs-b05e1
+## 2. Créer le Worker depuis GitHub — méthode recommandée
+
+Dans le même compte Cloudflare que MovieQuest :
+
+1. Ouvrir [Cloudflare](https://dash.cloudflare.com/) → **Workers & Pages**.
+2. Choisir **Create application / Créer une application**, puis **Import a repository / Importer un dépôt** ou l'option de connexion à GitHub. Choisir un **Worker**, pas un site Pages.
+3. Autoriser le dépôt **vchaillo/youtube-favs** si Cloudflare ne le propose pas, puis le sélectionner.
+4. Renseigner :
+
+| Champ | Valeur |
+| --- | --- |
+| Nom du Worker | `youtube-favs` |
+| Branche de production | `main` |
+| Root directory / Dossier racine | `worker` |
+| Build command / Commande de build | Laisser vide |
+| Deploy command / Commande de déploiement | `npm run deploy` |
+
+Le dossier `worker` possède son propre `package.json` et son fichier `wrangler.toml`. Cloudflare installe ses dépendances et Wrangler prépare automatiquement le code. Aucun dossier de sortie n'est nécessaire. Le nom choisi doit correspondre à `name = "youtube-favs"` dans `worker/wrangler.toml`.
+
+5. Cliquer sur **Deploy / Déployer** et attendre la fin du déploiement.
+6. Copier l'URL publique du Worker, par exemple `https://youtube-favs.votre-compte.workers.dev`.
+
+Le frontend préremplit `https://youtube-favs.valentinchaillou89.workers.dev` en reprenant le sous-domaine configuré pour MovieQuest. Il s'agit d'une adresse attendue, pas d'une preuve que le nouveau Worker existe. Utiliser l'URL réellement affichée par Cloudflare.
+
+## 3. Ajouter le secret YouTube au Worker
+
+1. Ouvrir le Worker **youtube-favs** dans Cloudflare.
+2. Aller dans **Settings → Variables and Secrets**.
+3. Cliquer sur **Add**, choisir le type **Secret** et saisir exactement :
+
+| Champ | Valeur |
+| --- | --- |
+| Nom | `YOUTUBE_API_KEY` |
+| Valeur | La clé YouTube créée à l'étape 1 |
+
+4. Enregistrer et déployer la modification (**Deploy** ou **Save and deploy**, selon l'interface).
+
+Attention : il faut un **secret d'exécution du Worker**, dans **Settings → Variables and Secrets**. Les secrets de **Build** sont distincts et ne seront pas disponibles quand le site appelle l'API. Les secrets restent côté Cloudflare ; `keep_vars = true` préserve les variables configurées dans le tableau de bord.
+
+Aucun secret Firebase, fichier de compte de service, jeton OAuth YouTube ou abonnement Workers Paid n'est nécessaire pour cette configuration.
+
+## 4. Vérifier le Worker
+
+Ouvrir `https://VOTRE-WORKER.workers.dev/health` dans le navigateur.
+
+Le résultat attendu est :
+
+```json
+{
+  "ok": true,
+  "service": "youtube-favs",
+  "projectId": "yt-favs-b05e1",
+  "youtubeConfigured": true,
+  "rateLimitConfigured": true
+}
 ```
 
-La commande `functions:secrets:set` demande la clé de manière interactive et l’enregistre dans Google Secret Manager. Ne pas la mettre dans GitHub, le JavaScript public ou un message de discussion. Les droits Google Cloud requis peuvent être demandés par le CLI au premier déploiement.
+- `youtubeConfigured: false` : ajouter le secret d'exécution `YOUTUBE_API_KEY` puis déployer.
+- `rateLimitConfigured: false` : vérifier que le déploiement utilise bien `worker/wrangler.toml`, avec ses deux liaisons de limitation.
+- Une réponse 404 : vérifier l'URL exacte et le déploiement du Worker.
 
-Les règles [firestore.rules](firestore.rules) doivent déjà être publiées pour accéder à la bibliothèque personnelle. Les compteurs serveur sont sous `_youtubeLimits` : les clients n’y ont aucun accès avec ces règles. La fonction utilise les droits administrateur de son compte de service.
+Ce contrôle vérifie la configuration déclarée, pas la validité de la clé chez Google. Le test réel est l'actualisation d'une émission à l'étape suivante.
 
-Facultatif : activer une règle de suppression TTL sur le champ `expiresAt` du groupe de collections `_youtubeLimits` dans Firestore pour supprimer les anciens compteurs. Leur date d’expiration est fixée à deux jours. Leur contenu ne comprend ni clé ni métadonnées de vidéos.
+## 5. Relier le site au Worker
 
-## Vérification après déploiement
+1. Ouvrir [youtube-favs](https://vchaillo.github.io/youtube-favs/) et se connecter avec Google.
+2. Ouvrir **Mon profil** depuis l'avatar en haut à droite.
+3. Dans **Connexion YouTube**, coller l'URL publique du Worker, sans `/health`, `/api/youtube`, paramètres ou clé.
+4. Cliquer sur **Tester et enregistrer**. Le site vérifie `/health` avant d'enregistrer l'adresse dans ce navigateur.
+5. Ouvrir **Papy Grenier** et cliquer sur **Actualiser depuis YouTube**.
+6. Tester **Rhinocéros** et **Esquive la Boule de Feu**. Utiliser **Charger la suite** pour parcourir les archives jusqu'au message **Dernière page atteinte**.
 
-- Se connecter à l’application avec Google et ouvrir **Papy Grenier**.
-- Cliquer sur **Actualiser depuis YouTube** : titres, dates et durées sont rechargés depuis la playlist officielle.
-- Tester **Rhinocéros**, puis **Esquive la Boule de Feu**. **Charger la suite** parcourt les archives, 50 publications par page. Le message « Dernière page atteinte » indique une pagination terminée, pas une garantie que toutes les vidéos historiques sont encore publiques.
-- Pour une règle par mots-clés, vérifier les correspondances sur plusieurs pages, y compris les pages sans résultat. Au moins un terme séparé par une virgule doit apparaître dans le titre ou la description ; les accents et les majuscules sont ignorés.
-- Recharger la page : les références des ajouts personnels restent dans le compte et leurs métadonnées sont relues depuis YouTube. Vérifier que les suivis, favoris et épisodes vus restent propres à chaque compte.
-- Se déconnecter : aucun import n’est possible. Une réponse tardive est ignorée si le compte change.
+La connexion Google et les règles [firestore.rules](firestore.rules) existantes restent nécessaires. Si la bibliothèque fonctionne déjà, aucune modification Firebase n'est requise. L'URL du Worker est une configuration locale publique ; suivis, favoris et épisodes vus restent sauvegardés dans le compte Firebase.
+
+## Autre méthode : déployer depuis son ordinateur
+
+Avec Node.js 22 ou une version compatible avec Wrangler, depuis un clone à jour du dépôt :
+
+```sh
+cd worker
+npm ci
+npx wrangler login
+npm run deploy
+npx wrangler secret put YOUTUBE_API_KEY
+```
+
+La dernière commande demande la clé de manière interactive et publie une nouvelle version avec ce secret. Ouvrir ensuite `/health` et suivre l'étape 5. Ne pas lancer `firebase init` ou `firebase deploy` pour ce backend.
 
 ## Fonctionnement et limites
 
-- Authentification Firebase obligatoire : le SDK callable transmet le jeton et Firebase le vérifie. Aucune permission OAuth YouTube n’est demandée pour ces données publiques. L’application ne lit pas les abonnements, playlists privées ou « J’aime » personnels du compte Google.
-- Sources prises en charge : playlists `?list=…`, chaînes `/@identifiant`, `/channel/UC…` et anciens liens `/user/…`. Remplacer un ancien lien `/c/…` par son handle actuel.
-- Une requête lit une page de 50 publications au maximum. Les vidéos privées ou supprimées ne sont pas importées. Les vidéos non intégrables conservent le lien vers YouTube.
-- Les chaînes sont lues via leur playlist de publications ; pas de `search.list` coûteux. Une page réserve jusqu’à 3 unités d’appels de lecture ; un lot de métadonnées en réserve 1. Le budget applicatif global est de 4 000 unités/jour UTC, en plus du quota Google Cloud réel.
-- Chaque compte est limité à 30 requêtes/minute et 300/jour UTC, y compris les réponses en cache. Les compteurs et le budget global sont mis à jour dans une transaction Firestore, donc partagés entre les instances.
-- Cache en mémoire serveur : 15 minutes, 128 pages maximum par instance. Les métadonnées API restent dans la mémoire de l’onglet et ne sont pas copiées dans Firestore. Seuls les identifiants, leur rattachement à une émission et les choix personnels sont sauvegardés. Le catalogue historique fourni dans le dépôt reste un relevé statique distinct.
-- Limite actuelle : 1 000 ajouts personnels par compte, en plus des vidéos du catalogue initial. Une vidéo est rattachée à une seule émission dans le modèle actuel. L’import est additif : changer une règle ne supprime pas les anciennes références.
-- Les nouvelles sorties sont récupérées au clic sur **Actualiser**, pas via une tâche planifiée. Une playlist peut être ordonnée manuellement ; parcourir toutes ses pages pour vérifier l’ensemble de ses ajouts.
-- Deux instances serveur maximum, aucune instance minimale. Aucun téléchargement de vidéo ni contournement des restrictions de lecture.
+- Firebase Authentication identifie l'utilisateur. Le frontend transmet son jeton d'identité, et le Worker vérifie sa signature RSA avec les clés publiques Google, son expiration, son émetteur et le projet `yt-favs-b05e1`. Aucun jeton n'est enregistré dans le stockage de l'application. La vérification ne consulte pas les révocations de session en temps réel ; un jeton déjà émis peut rester valide jusqu'à son expiration.
+- La clé YouTube n'est jamais renvoyée au frontend. La route `POST /api/youtube` exige une session valide. CORS accepte seulement `https://vchaillo.github.io` ; CORS ne remplace pas la vérification du jeton.
+- `action: "catalog"` accepte une playlist, une chaîne complète ou une sélection par mots-clés ; `action: "videos"` accepte jusqu'à 50 identifiants pour recharger les métadonnées. Les sources sont limitées à YouTube : aucune URL de destination arbitraire n'est acceptée par le proxy.
+- Sources de chaîne : `/@identifiant`, `/channel/UC…` et `/user/…`. Une page analyse au maximum 50 publications. Les mots-clés séparés par des virgules sont comparés au titre et à la description, sans distinction d'accents ou de majuscules.
+- La récupération est déclenchée à la demande, sans GitHub Action de catalogue ni tâche Firebase planifiée. La recherche globale YouTube n'est pas encore une interface de cette version ; le champ de recherche existant filtre le catalogue déjà importé. Les nouvelles sources peuvent être ajoutées par leur lien dans « Suivre une émission ».
+- Les limites natives Cloudflare sont de 30 demandes/minute/compte et 60 pages non mises en cache/minute pour l'application, **par emplacement Cloudflare**. Elles sont approximatives et ne constituent pas un compteur mondial strict ni un budget journalier. Le quota Google Cloud reste la limite globale de l'API YouTube. Les namespaces de ces deux bindings sont propres à youtube-favs.
+- Cache en mémoire : 15 minutes, 128 pages maximum par instance. Il peut disparaître au redémarrage ou différer entre instances. Les métadonnées API ne sont pas copiées dans Firestore ; seuls les identifiants et les choix personnels sont sauvegardés. Le catalogue historique fourni dans le dépôt reste un relevé statique distinct.
+- Limite actuelle : 1 000 ajouts personnels par compte, en plus du catalogue initial. Une vidéo reste rattachée à une seule émission. L'import est additif et ne supprime pas les anciens ajouts lorsque les règles changent.
+- Les vidéos privées, supprimées ou absentes de la source peuvent manquer. La lecture, les publicités et les restrictions régionales ou d'intégration restent contrôlées par YouTube.
+- Utiliser Workers **Free** et Firebase **Spark** dans leurs quotas. Le quota Workers gratuit est partagé avec les autres Workers du compte, dont MovieQuest. Vérifier les quotas Google Cloud et Cloudflare selon l'utilisation.
 
-## Validation locale
+## Validation
+
+Depuis la racine :
 
 ```sh
+npm ci --ignore-scripts
+npm ci --prefix worker
 npm test
+npm run check --prefix worker
 npm run test:rules
 ```
 
-Les tests d’API utilisent des réponses Google simulées pour vérifier pagination, sélection, cache, quotas, erreurs et absence de fuite de clé. Les règles Firestore sont testées dans un émulateur. Le test avec une véritable clé YouTube et un compte Google doit être effectué après activation ; un test simulé ne prouve pas la configuration du projet de production.
+Le contrôle Wrangler est un assemblage local à blanc : il ne déploie rien et n'utilise pas de clé YouTube. Les tests vérifient l'API HTTP, les signatures RSA, le refus des sessions invalides, la pagination, le filtrage, les limites, les changements de compte et la configuration du frontend. Le test réel avec la clé YouTube se fait après déploiement du Worker.
 
-Documentation : [YouTube Data API](https://developers.google.com/youtube/v3/getting-started), [fonctions callable](https://firebase.google.com/docs/functions/callable), [secrets Firebase](https://firebase.google.com/docs/functions/config-env), [déploiement Functions](https://firebase.google.com/docs/functions/get-started).
+Documentation : [secrets Workers](https://developers.cloudflare.com/workers/configuration/secrets/), [déploiement depuis Git](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/), [limites natives](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/), [vérification Firebase](https://firebase.google.com/docs/auth/admin/verify-id-tokens), [API YouTube](https://developers.google.com/youtube/v3/getting-started).

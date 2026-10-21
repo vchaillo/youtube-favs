@@ -7,3 +7,8 @@ _site/
 .env.*
 .secret.local
 *.service-account.json
+
+.dev.vars
+.dev.vars.*
+.wrangler/
+worker/dist/

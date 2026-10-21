@@ -36,21 +36,22 @@ jobs:
       - name: Install validation dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix functions --ignore-scripts --no-audit --no-fund
+          npm ci --prefix worker --no-audit --no-fund
       - name: Validate application and account isolation
         run: |
           node --check app.js
           node --check cloud-state.js
           node --check firebase-app.mjs
-          node --check functions/index.js
-          node --check functions/youtube.cjs
-          GCLOUD_PROJECT=demo-youtube-favs node -e "require('./functions/index.js')"
+          node --check youtube-api.js
+          node --check worker/src/index.js
+          node --check worker/src/youtube.js
+          npm run check --prefix worker
           npm test
           npm run test:rules
       - name: Prepare static files
         run: |
           mkdir _site
-          cp index.html styles.css app.js cloud-state.js firebase-app.mjs favicon.svg .nojekyll _site/
+          cp index.html styles.css app.js cloud-state.js firebase-app.mjs youtube-api.js favicon.svg .nojekyll _site/
           cp -R data _site/data
       - name: Configure Pages
         uses: actions/configure-pages@v5

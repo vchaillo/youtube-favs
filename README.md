@@ -1,6 +1,6 @@
-# YouTube Data API
+# YouTube Data API — Cloudflare Worker
 
-La récupération sécurisée par Firebase Functions est implémentée. Voir [YOUTUBE_SETUP.md](YOUTUBE_SETUP.md) pour activer l’API, enregistrer la clé serveur et déployer la fonction. L’interface permet ensuite d’actualiser chaque émission et de parcourir ses archives.
+Le frontend utilise désormais un Worker Cloudflare pour récupérer les vidéos à la demande. Firebase Spark conserve la connexion Google et les données personnelles. Aucun déploiement Firebase Functions ni forfait Blaze n’est nécessaire. Le [guide de configuration](YOUTUBE_SETUP.md) explique comment déployer le dossier `worker`, ajouter le secret `YOUTUBE_API_KEY` et renseigner l’URL dans Mon profil.
 
 # youtube-favs
 
@@ -12,7 +12,7 @@ A personal YouTube show library: follow specific programs instead of entire chan
 - A one-time public catalogue import covering five selections and 189 real videos.
 - Imported publication timestamps and durations, original video titles, source links and channel identity verification.
 - Show details, title search, category and watched-state filters, sorting and browser back/forward navigation.
-- Favorites, watchlist, manual watched status and local persistence.
+- Favorites, watchlist and manual watched status saved privately in Firestore.
 - Embedded YouTube player loaded only after an explicit click, plus a permanent YouTube fallback link.
 - Add shows with channel/keyword or playlist rules; manually add videos by URL.
 - Light/dark themes and accent preferences.
@@ -68,7 +68,7 @@ The YouTube Data API and its private-key backend remain a separate integration. 
 
 The 2021 Rétro F1 edition, *Révolution*, was not located on the official YouTube channel. Its official CANAL+ reference is linked from the show page. The twelve referenced YouTube videos may have geographic restrictions; metadata access does not imply that the embedded player will work in every country.
 
-This is an import snapshot, not an ongoing sync. The application performs no YouTube Data API calls. It stores following rules locally for a later integration. Private, deleted or otherwise inaccessible content cannot be guaranteed. No audiovisual content was downloaded or rehosted.
+This is an import snapshot, not an ongoing sync. The bundled snapshot remains available while authenticated, on-demand requests through the Cloudflare Worker refresh the catalogue. Private rules and references are saved in Firestore. Private, deleted or otherwise inaccessible content cannot be guaranteed. No audiovisual content was downloaded or rehosted.
 
 Thumbnail requests go to `i.ytimg.com`. The YouTube iframe is created only when the user chooses to load it, using `youtube-nocookie.com`; this still connects to YouTube. Playback, ads, regional restrictions and embedding permissions remain controlled by YouTube. Watched status is manual.
 
@@ -86,15 +86,11 @@ npm run test:rules
 
 Tests cover catalogue navigation, user-specific filtering, account changes, explicit legacy import, URL validation, manual records, deferred player loading, concurrent saves, stale callbacks and cloud failures. Firestore emulator tests prove owner-only reads/writes, rejection of anonymous and cross-account requests, validation and revision checks. They do not complete a real Google sign-in, verify live Firestore rules or replace visual browser QA. Emulator commands always use the isolated demo project `demo-youtube-favs`.
 
-## Next integration
+## YouTube integration
 
-1. Prefer official show playlists and paginate `playlistItems.list` to import archives.
-2. Otherwise list a channel's uploads and apply normalized title/description matching within that channel, with manual exceptions.
-3. Maintain a shared public catalogue using a scheduled GitHub Action and a YouTube API key stored as an Actions secret. Cache metadata and respect API quotas and refresh policies. Scheduled Actions are not exact-time delivery.
-4. Keep using Firebase Authentication and the existing private Firestore state for each user. Expand the private schema when the library needs more granular collections.
-5. Use a server or Worker for private, dynamic per-user YouTube catalogue requests when necessary; never put a server API secret in frontend files.
+The Worker imports playlist pages, resolves channel uploads and filters titles and descriptions by normalized keywords. The frontend allows personal rules, manual additions, authenticated imports and archive pagination. Search currently filters the imported catalogue; global YouTube search remains a future feature. API metadata stays in tab/server memory, while Firestore stores personal selections and video references.
 
-Firebase is a separate concern from YouTube metadata ingestion. GitHub Pages is static hosting and cannot run a persistent backend.
+See [YOUTUBE_SETUP.md](YOUTUBE_SETUP.md) for deployment, limits and current coverage. GitHub Pages deploys only public frontend assets; Worker source and development files are excluded from the Pages artifact.
 
 ## Catalogue sources
 
@@ -106,7 +102,7 @@ Firebase is a separate concern from YouTube metadata ingestion. GitHub Pages is 
 - CANAL+ Sport: https://www.youtube.com/@CanalplusSport
 - Missing 2021 edition reference: https://www.canalplus.com/sport/formule-1/2021/
 
-## API documentation for the next stage
+## API documentation
 
 - https://developers.google.com/youtube/v3/getting-started
 - https://developers.google.com/youtube/v3/docs/playlistItems/list

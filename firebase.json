@@ -9,16 +9,5 @@
     "ui": {
       "enabled": false
     }
-  },
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "youtube",
-      "ignore": [
-        "node_modules",
-        ".env*",
-        "*-debug.log"
-      ]
-    }
-  ]
+  }
 }

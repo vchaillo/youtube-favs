@@ -168,3 +168,13 @@ test('YouTube errors leave existing selections available and can be retried',asy
   assert.equal(app.run('state.following[0]'),'papy');
   assert.equal(app.run("youtubeImports.get('papy').busy"),false);
 });
+
+test('Worker URL configuration has a test-and-save flow without modifying private selections',async()=>{
+  const app=boot();
+  app.run("globalThis.youtubeFavsCloud.workerOrigin=()=> 'https://old.workers.dev';globalThis.youtubeFavsCloud.configureWorker=async origin=>({origin,persisted:true});location.hash='#/settings';render()");
+  assert.match(app.nodes.get('#app').innerHTML,/URL du Worker Cloudflare/);
+  const button={disabled:false};
+  await app.listeners.submit({preventDefault(){},target:{id:'workerForm',values:{origin:'https://new.workers.dev'},querySelector:()=>button}});
+  assert.match(app.nodes.get('#app').innerHTML,/Worker connecté/);
+  assert.equal(button.disabled,false);assert.equal(app.writes.length,0);
+});

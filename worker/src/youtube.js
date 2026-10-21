@@ -1,9 +1,7 @@
-'use strict';
-const {createHash}=require('node:crypto');
 const VIDEO=/^[\w-]{11}$/;
 const normalize=value=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 function fail(code,message){return Object.assign(new Error(message),{code});}
-function parseRequest(data){
+export function parseRequest(data){
   if(!data||typeof data!=='object')throw fail('invalid-argument','Requête invalide.');
   if(data.action==='videos'){
     if(!Array.isArray(data.ids)||!data.ids.length||data.ids.length>50||data.ids.some(id=>typeof id!=='string'||!VIDEO.test(id)))throw fail('invalid-argument','Entre 1 et 50 identifiants vidéo sont nécessaires.');
@@ -31,7 +29,7 @@ function parseRequest(data){
   }
   return result;
 }
-function durationLabel(value=''){
+export function durationLabel(value=''){
   const m=/^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value);
   if(!m)return '';
   const seconds=Number(m[1]||0)*86400+Number(m[2]||0)*3600+Number(m[3]||0)*60+Number(m[4]||0);
@@ -41,7 +39,7 @@ function durationLabel(value=''){
 function metadata(video){
   return {id:video.id,title:(video.snippet?.title||'Vidéo YouTube').slice(0,200),author:(video.snippet?.channelTitle||'').slice(0,100),publishedAt:video.snippet?.publishedAt||'',durationLabel:durationLabel(video.contentDetails?.duration),embeddable:video.status?.embeddable!==false};
 }
-function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
+export function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
   const cache=new Map();
   async function google(resource,params){
     const url=new URL(`https://www.googleapis.com/youtube/v3/${resource}`);
@@ -64,11 +62,11 @@ function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
     return data.items||[];
   }
   return async function handle(request){
-    // Callable verifies the Firebase ID token before supplying request.auth.
+    // The HTTP handler verifies the Firebase ID token before supplying request.auth.
     if(!request.auth?.uid)throw fail('unauthenticated','Connectez-vous pour actualiser YouTube.');
     const input=parseRequest(request.data);
-    if(!apiKey())throw fail('failed-precondition','La clé YouTube doit être configurée sur Firebase.');
-    const key=createHash('sha256').update(JSON.stringify(input)).digest('hex');
+    if(!apiKey())throw fail('failed-precondition','La clé YouTube doit être configurée dans les secrets Cloudflare.');
+    const key=JSON.stringify(input);
     const hit=cache.get(key);
     const cached=hit&&hit.expires>now();
     // Reserve an upper bound before requests, including failed upstream calls.
@@ -97,12 +95,3 @@ function createService({apiKey,consume,fetchImpl=fetch,now=Date.now}){
     return {...result,cached:false};
   };
 }
-function nextLimits(user={},global={},cost,now){
-  const minute=Math.floor(now/60000),day=new Date(now).toISOString().slice(0,10);
-  const daily=user.day===day?(user.daily||0):0;
-  const burst=user.minute===minute?(user.burst||0):0;
-  const units=global.day===day?(global.units||0):0;
-  if(burst>=30||daily>=300||units+cost>4000)throw fail('resource-exhausted','Limite d’actualisation atteinte. Réessayez plus tard.');
-  return {user:{day,minute,daily:daily+1,burst:burst+1},global:{day,units:units+cost}};
-}
-module.exports={createService,parseRequest,durationLabel,nextLimits};

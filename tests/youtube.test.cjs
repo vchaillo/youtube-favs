@@ -1,7 +1,8 @@
 'use strict';
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {createService,parseRequest,durationLabel,nextLimits}=require('../functions/youtube.cjs');
+let createService,parseRequest,durationLabel;
+require('node:test').before(async()=>{({createService,parseRequest,durationLabel}=await import('../worker/src/youtube.js'));});
 const id='V34x1CxlAZ0';
 const source='https://www.youtube.com/playlist?list=PL01234567890';
 const auth={uid:'alice'};
@@ -71,16 +72,6 @@ test('missing key stops requests and explicit video batches handle disappeared v
   await assert.rejects(absent.service({auth,data:catalog}),{code:'failed-precondition'});assert.equal(absent.calls.length,0);
   const empty=fixture({fetchImpl:async()=>({ok:true,json:async()=>({items:[]})})});
   assert.deepEqual((await empty.service({auth,data:{action:'videos',ids:[id]}})).episodes,[]);
-});
-test('persistent limits reset by minute and day and cap the global budget',()=>{
-  const now=Date.parse('2026-10-21T10:00:00Z');
-  const first=nextLimits({}, {},3,now);
-  assert.equal(first.user.daily,1);assert.equal(first.global.units,3);
-  assert.throws(()=>nextLimits({...first.user,burst:30},first.global,1,now),{code:'resource-exhausted'});
-  assert.throws(()=>nextLimits({...first.user,daily:300},first.global,1,now+60000),{code:'resource-exhausted'});
-  assert.throws(()=>nextLimits(first.user,{...first.global,units:4000},1,now),{code:'resource-exhausted'});
-  assert.equal(nextLimits(first.user,{...first.global,units:4000},0,now).global.units,4000);
-  assert.equal(nextLimits(first.user,first.global,1,now+86400000).global.units,1);
 });
 test('duration formatting preserves long episodes',()=>{
   assert.equal(durationLabel('PT2M5S'),'2:05');assert.equal(durationLabel('P1DT2H'),'26:00:00');assert.equal(durationLabel('bad'),'');

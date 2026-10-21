@@ -1,0 +1,16 @@
+name = "youtube-favs"
+main = "src/index.js"
+compatibility_date = "2026-10-21"
+workers_dev = true
+keep_vars = true
+
+# Account-wide namespace identifiers must be distinct from other applications.
+[[ratelimits]]
+name = "USER_LIMITER"
+namespace_id = "106338616166801"
+simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "GLOBAL_LIMITER"
+namespace_id = "106338616166802"
+simple = { limit = 60, period = 60 }
