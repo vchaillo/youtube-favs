@@ -110,7 +110,10 @@ test('closing preview writes no episodes and old-account responses are ignored',
 test('removing imported videos persists private exclusions and keeps them unchecked on reimport',async()=>{
   const app=boot({privateData:{shows:[show()],episodes:[video()]}});
   app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'Removed'}],scanned:1,nextPageToken:null})");
-  await app.click({removeVideo:'AAAAAAAAAAA'});assert.equal(app.writes.at(-1).next.episodes[0].hidden,true);
+  await app.click({removeVideo:'AAAAAAAAAAA'});assert.equal(app.writes.length,0);
+  assert.equal(app.nodes.get('#removalModal').open,true);
+  await app.click({action:'confirm-removal'});assert.equal(app.writes.at(-1).next.episodes[0].hidden,true);
+  assert.equal(app.nodes.get('#removalModal').open,false);
   await app.click({youtube:'program'});assert.equal(app.run("youtubeImports.get('program').selected.size"),0);
 });
 test('watchlist checks sources and separates new releases from the unseen backlog',async()=>{
@@ -155,4 +158,40 @@ test('public Worker URL configuration does not overwrite private selections',asy
   const app=boot();app.run("globalThis.youtubeFavsCloud.configureWorker=async origin=>({origin,persisted:true});location.hash='#/settings';render()");
   await app.listeners.submit({preventDefault(){},target:{id:'workerForm',values:{origin:'https://example.workers.dev'},querySelector:()=>({})}});
   assert.match(app.nodes.get('#app').innerHTML,/Worker connecté/);assert.equal(app.writes.length,0);
+});
+
+test('deletion can be cancelled and a pending confirmation is cleared on account changes',async()=>{
+  const app=boot({privateData:{shows:[show()],episodes:[video()]}});
+  await app.click({removeVideo:'AAAAAAAAAAA'});
+  assert.match(app.run('episodeCard(state.episodes[0])'),/title="Supprimer de ma bibliothèque"/);
+  await app.click({action:'cancel-removal'});
+  assert.equal(app.run('visibleEpisodes().length'),1);assert.equal(app.writes.length,0);
+  await app.click({action:'confirm-removal'});assert.equal(app.writes.length,0);
+  await app.click({removeVideo:'AAAAAAAAAAA'});
+  app.emit('auth',{status:'loading',user:{uid:'bob'}});
+  app.emit('data',{uid:'bob',data:readyData(app,{shows:[show()],episodes:[video()]})});
+  await app.click({action:'confirm-removal'});
+  assert.equal(app.nodes.get('#removalModal').open,false);
+  assert.equal(app.run('visibleEpisodes().length'),1);assert.equal(app.writes.length,0);
+});
+test('confirmation preserves the open import preview and its selections',async()=>{
+  const app=boot({privateData:{shows:[show()],episodes:[video()]}});
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'Existing'},{id:'BBBBBBBBBBB',title:'New'}],scanned:2,nextPageToken:null})");
+  await app.click({youtube:'program'});
+  await app.click({removeVideo:'AAAAAAAAAAA'});
+  await app.click({action:'cancel-removal'});
+  assert.equal(app.run('activeImportId'),'program');
+  assert.equal(app.run("youtubeImports.get('program').selected.has('BBBBBBBBBBB')"),true);
+  await app.click({removeVideo:'AAAAAAAAAAA'});await app.click({action:'confirm-removal'});
+  assert.equal(app.nodes.get('#modal').open,true);
+  assert.match(app.nodes.get('#modalContent').innerHTML,/Retirée de votre bibliothèque/);
+  assert.equal(app.run("youtubeImports.get('program').selected.has('BBBBBBBBBBB')"),true);
+});
+test('publication display respects timezone offsets, rejects missing dates and distinguishes duration',()=>{
+  const app=boot();
+  assert.equal(app.run("publicationLabel('2026-10-21T12:30:00Z')"),app.run("publicationLabel('2026-10-21T14:30:00+02:00')"));
+  assert.match(app.run("publicationLabel('2026-10-21T12:30:00Z')"),/datetime="2026-10-21T12:30:00.000Z"/);
+  assert.equal(app.run("publicationLabel('invalid')"),'');assert.equal(app.run("publicationLabel('')"),'');
+  assert.match(app.run("episodeMetadata({durationLabel:'12:34'},'Channel')"),/Durée de la vidéo/);
+  assert.doesNotMatch(app.run("episodeMetadata({durationLabel:'12:34'},'Channel')"),/<time/);
 });
