@@ -114,3 +114,30 @@ test('playlist mode requires a playlist link and keeps the selected channel iden
   app.fill('source','https://www.youtube.com/playlist?list=PL1234567890123');await app.submit();
   assert.equal(app.writes.at(-1).next.shows.at(-1).mode,'playlist');
 });
+
+test('episode feedback keeps saves immediate, cleans up inert exit copies and respects reduced motion',async()=>{
+  const app=boot({shows:[show()],episodes:[video(),video('BBBBBBBBBBB')]});
+  const prototype=app.window.HTMLElement.prototype,originalAnimate=prototype.animate,originalRect=prototype.getBoundingClientRect;
+  const animations=[];let reduced=false;
+  app.window.matchMedia=()=>({matches:reduced});
+  prototype.getBoundingClientRect=()=>({left:10,top:20,width:300,height:200});
+  prototype.animate=function(frames){let finish;const finished=new Promise(resolve=>{finish=resolve;});animations.push({node:this,frames,finish});return {finished};};
+  try{
+    const card=app.document.querySelector('[data-key="episode-AAAAAAAAAAA"]');
+    app.click('[data-id="AAAAAAAAAAA"]');
+    assert.equal(app.writes.length,1);assert.equal(app.document.querySelector('[data-key="episode-AAAAAAAAAAA"]'),card);
+    assert.ok(animations.some(animation=>animation.node===card));
+    app.click('[data-remove-video="AAAAAAAAAAA"]');app.click('[data-action="confirm-removal"]');
+    assert.equal(app.writes.length,2);
+    const overlay=app.document.querySelector('[data-animation-overlay]');assert.ok(overlay);
+    assert.equal(overlay.getAttribute('aria-hidden'),'true');assert.ok(overlay.hasAttribute('inert'));
+    assert.equal(overlay.querySelector('[data-key]'),null);
+    for(const animation of animations)animation.finish();await app.settle();
+    assert.equal(app.document.querySelector('[data-animation-overlay]'),null);
+    reduced=true;const count=animations.length;
+    app.click('[data-id="BBBBBBBBBBB"]');assert.equal(app.writes.length,3);assert.equal(animations.length,count);
+  }finally{
+    if(originalAnimate)prototype.animate=originalAnimate;else delete prototype.animate;
+    if(originalRect)prototype.getBoundingClientRect=originalRect;else delete prototype.getBoundingClientRect;
+  }
+});
