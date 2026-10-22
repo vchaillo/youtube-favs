@@ -263,7 +263,7 @@ test('category and manual cover changes save without a YouTube import and surviv
   const app=boot({shows:[show()],episodes:[video()]},'#/show/program');
   app.click('.show-cover-editor');
   const form=app.document.querySelector('#appearanceForm');
-  form.querySelector('[name="category"]').value='Science';form.querySelector('[name="coverMode"]').value='manual';form.querySelector('[name="coverSource"]').value='https://images.example.com/science.jpg';
+  app.click('[data-remove-category="Personnel"]');form.querySelector('[name="categoryEntry"]').value='Science';form.querySelector('[name="coverMode"]').value='manual';form.querySelector('[name="coverSource"]').value='https://images.example.com/science.jpg';
   const calls=app.requests.length;await app.submit('#appearanceForm');
   assert.equal(app.writes.length,1);assert.equal(app.requests.length,calls);
   const payload=app.writes.at(-1).next;assert.equal(payload.shows[0].category,'Science');assert.equal(payload.shows[0].coverMode,'manual');assert.equal(payload.shows[0].coverUrl,'https://images.example.com/science.jpg');
@@ -285,4 +285,49 @@ test('new releases update automatic covers to the newest publication and preserv
     assert.equal(app.run('state.shows[0].cover'),coverMode==='auto'?'CCCCCCCCCCC':'AAAAAAAAAAA');
     assert.equal(app.writes.at(-1).next.shows[0].coverUrl,coverMode==='manual'?'https://images.example.com/manual.jpg':'');
   }
+});
+
+test('multiple labels can be created with Enter, selected without duplicates and saved from the editor',async()=>{
+  const app=boot({shows:[show({category:'Culture'})],episodes:[video()]},'#/show/program');
+  app.click('.category-cell');
+  const entry=app.document.querySelector('#categoryEntry');entry.value='Science';
+  const enter=new app.window.Event('keydown',{bubbles:true,cancelable:true});enter.key='Enter';entry.dispatchEvent(enter);
+  assert.ok(enter.defaultPrevented);assert.equal(app.document.querySelectorAll('#selectedCategories .category-label').length,2);
+  entry.value='science';const duplicate=new app.window.Event('keydown',{bubbles:true,cancelable:true});duplicate.key='Enter';entry.dispatchEvent(duplicate);
+  assert.equal(app.document.querySelectorAll('#selectedCategories .category-label').length,2);
+  await app.submit('#appearanceForm');
+  const payload=app.writes.at(-1).next;assert.deepEqual([...payload.shows[0].categories],['Culture','Science']);assert.equal(payload.shows[0].category,'Culture');
+  app.emit('data',{uid:'alice',data:payload});
+  assert.equal(app.document.querySelectorAll('.category-cell .category-label').length,2);
+  app.run("location.hash='#/shows';render()");
+  assert.equal(app.document.querySelectorAll('.show-card .category-label').length,2);
+  const select=app.document.querySelector('#categoryFilter');select.value='Science';select.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  assert.equal(app.document.querySelectorAll('.show-card').length,1);
+  app.run("location.hash='#/watchlist/episodes';render()");await app.settle();
+  const watchSelect=app.document.querySelector('#categoryFilter');watchSelect.value='Science';watchSelect.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  assert.equal(app.document.querySelectorAll('.episode').length,1);assert.equal(app.document.querySelectorAll('.episode .category-label').length,2);
+});
+test('clearing every category survives a cloud reload and supports the uncategorized filter',async()=>{
+  const app=boot({shows:[show({categories:['Culture','Science'],category:'Culture'})],episodes:[video()]},'#/show/program');
+  app.click('.category-cell');app.click('[data-remove-category="Culture"]');app.click('[data-remove-category="Science"]');
+  await app.submit('#appearanceForm');
+  const payload=app.writes.at(-1).next;assert.equal(payload.shows[0].categories.length,0);assert.equal(payload.shows[0].category,'');
+  app.emit('data',{uid:'alice',data:payload});assert.equal(app.run('showCategories(state.shows[0]).length'),0);
+  app.run("location.hash='#/shows';render()");
+  const select=app.document.querySelector('#categoryFilter');select.value='__uncategorized__';select.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  assert.equal(app.document.querySelectorAll('.show-card').length,1);
+});
+test('cancelling label edits keeps the programme unchanged and a new programme can receive several labels',async()=>{
+  const app=boot({shows:[show({category:'Culture'})]},'#/show/program');app.click('.category-cell');
+  app.run("addCategory('Science');closeModal()");assert.deepEqual([...app.run('showCategories(state.shows[0])')],['Culture']);assert.equal(app.writes.length,0);
+  app.run("showForm();addCategory('Arts');addCategory('Science')");
+  app.fill('name','Another show');app.fill('channel','My channel');await app.submit();
+  const created=app.writes.at(-1).next.shows.find(item=>item.name==='Another show');assert.ok(created);assert.deepEqual([...created.categories],['Arts','Science']);
+});
+
+test('removing a selected suggestion clears the search rather than saving it as a new label',async()=>{
+  const app=boot({shows:[show({categories:['Culture','Science'],category:'Culture'})]},'#/show/program');app.click('.category-cell');
+  const input=app.document.querySelector('#categoryEntry');input.value='Scie';input.dispatchEvent(new app.window.Event('input',{bubbles:true}));
+  app.click('[data-category-choice="Science"]');assert.equal(input.value,'');
+  await app.submit('#appearanceForm');assert.deepEqual([...app.writes.at(-1).next.shows[0].categories],['Culture']);
 });

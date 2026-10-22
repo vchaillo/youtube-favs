@@ -89,3 +89,10 @@ test('private removals override bundled records and survive unrelated edits with
   restored.episodes[0].hidden=false;assert.equal(model.pack(restored,catalogue).episodes.length,0);
   assert.equal(model.hydrate(model.empty(),catalogue).episodes.length,0);
 });
+
+test('category arrays migrate legacy values, trim labels and preserve an explicitly empty selection',()=>{
+  assert.deepEqual(model.categoriesOf({category:' Culture '}),['Culture']);
+  assert.deepEqual(model.categoriesOf({category:'Culture',categories:[]}),[]);
+  assert.deepEqual(model.categoriesOf({categories:[' Science ','science','Jeux vidéo','Jeux video','',null,12]}),['Science','Jeux vidéo']);
+  assert.equal(model.categoriesOf({categories:Array.from({length:30},(_,n)=>`Category ${n}`)}).length,20);
+});
