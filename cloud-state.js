@@ -14,6 +14,10 @@ globalThis.YouTubeFavsState = (() => {
   function safeSource(value) {
     try {const url=new URL(value);return url.protocol==='https:' && ['youtube.com','www.youtube.com','m.youtube.com','youtu.be'].includes(url.hostname) ? url.href : '';}catch{return '';}
   }
+  function cleanCoverUrl(value){
+    if(typeof value!=='string'||value.length>2000)return '';
+    try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port?url.href:'';}catch{return '';}
+  }
   function unique(items,key) {
     return [...new Map(items.map(item=>[key ? item[key] : item,item])).values()];
   }
@@ -24,7 +28,7 @@ globalThis.YouTubeFavsState = (() => {
       const pattern=key==='following'?idPattern:videoPattern;
       result[key]=unique((Array.isArray(value[key])?value[key]:[]).filter(id=>typeof id==='string'&&pattern.test(id))).slice(0,key==='following'?1000:5000);
     }
-    result.shows=unique((Array.isArray(value.shows)?value.shows:[]).filter(show=>show&&typeof show.id==='string'&&idPattern.test(show.id)&&typeof show.name==='string'&&typeof show.channel==='string'&&['keywords','playlist','channel'].includes(show.mode)&&safeSource(show.source)).map(show=>({id:show.id,name:cleanText(show.name,100),channel:cleanText(show.channel,100),source:safeSource(show.source),mode:show.mode,keywords:cleanText(show.keywords),description:cleanText(show.description,500),initials:cleanText(show.initials,8),category:cleanText(show.category,60)||'Personnel',cover:videoPattern.test(show.cover||'')?show.cover:'',...(typeof show.channelId==='string'&&/^UC[\w-]{22}$/.test(show.channelId)?{channelId:show.channelId}:{}),...(safeSource(show.channelSource)?{channelSource:safeSource(show.channelSource)}:{}),...(typeof show.releaseAfter==='string'&&Number.isFinite(Date.parse(show.releaseAfter))?{releaseAfter:new Date(show.releaseAfter).toISOString()}:{}),includeShorts:show.includeShorts===true,customRule:true})),'id').slice(0,200);
+    result.shows=unique((Array.isArray(value.shows)?value.shows:[]).filter(show=>show&&typeof show.id==='string'&&idPattern.test(show.id)&&typeof show.name==='string'&&typeof show.channel==='string'&&['keywords','playlist','channel'].includes(show.mode)&&safeSource(show.source)).map(show=>({id:show.id,name:cleanText(show.name,100),channel:cleanText(show.channel,100),source:safeSource(show.source),mode:show.mode,keywords:cleanText(show.keywords),description:cleanText(show.description,500),initials:cleanText(show.initials,8),category:cleanText(show.category,60)||'Personnel',cover:videoPattern.test(show.cover||'')?show.cover:'',coverMode:show.coverMode==='manual'?'manual':'auto',coverUrl:cleanCoverUrl(show.coverUrl),...(typeof show.channelId==='string'&&/^UC[\w-]{22}$/.test(show.channelId)?{channelId:show.channelId}:{}),...(safeSource(show.channelSource)?{channelSource:safeSource(show.channelSource)}:{}),...(typeof show.releaseAfter==='string'&&Number.isFinite(Date.parse(show.releaseAfter))?{releaseAfter:new Date(show.releaseAfter).toISOString()}:{}),includeShorts:show.includeShorts===true,customRule:true})),'id').slice(0,200);
     result.episodes=unique((Array.isArray(value.episodes)?value.episodes:[]).filter(episode=>episode&&typeof episode.id==='string'&&typeof episode.showId==='string'&&videoPattern.test(episode.id)&&idPattern.test(episode.showId)&&typeof episode.title==='string').map(episode=>({id:episode.id,showId:episode.showId,title:episode.hidden===true?'Vidéo retirée':episode.apiImported===true?'Vidéo YouTube':cleanText(episode.title),...(episode.hidden===true?{hidden:true}:{}),...(episode.apiImported===true?{apiImported:true}:{}),...(episode.newRelease===true?{newRelease:true}:{}),note:cleanText(episode.note,500),added:Number.isSafeInteger(episode.added)?episode.added:0})),'id').slice(0,1000);
     result.view=value.view==='list'?'list':'grid';
     result.theme=value.theme==='light'?'light':'dark';
@@ -110,5 +114,5 @@ globalThis.YouTubeFavsState = (() => {
     }
     return {receive,save,stop(){active=false;latest=empty();},isActive:()=>active};
   }
-  return {empty,sanitize,pack,hydrate,diff,applyPatch,createSession};
+  return {empty,sanitize,pack,hydrate,diff,applyPatch,createSession,cleanCoverUrl};
 })();

@@ -155,7 +155,7 @@ async function confirmYoutubeImport(){
     if(progress.watched.has(episode.id)){if(!state.watched.includes(episode.id))state.watched.push(episode.id);}else state.watched=state.watched.filter(id=>id!==episode.id);
     progress.selected.delete(episode.id);
   }
-  const show=showFor(showId);if(show){show.cover=show.cover||selected[0]?.id||'';show.includeShorts=progress.includeShorts===true;show.customRule=true;show.releaseAfter=new Date().toISOString();adoptSource(show,{channelId:progress.channelId});}
+  const show=showFor(showId);if(show){updateAutomaticCover(show);show.includeShorts=progress.includeShorts===true;show.customRule=true;show.releaseAfter=new Date().toISOString();adoptSource(show,{channelId:progress.channelId});}
   applyYoutubeMetadata();
   const saved=await save();
   if(generation!==youtubeGeneration)return;
@@ -294,7 +294,7 @@ async function checkNewReleases(){
       const fresh=[...candidates.values()].filter(episode=>!state.episodes.some(existing=>existing.id===episode.id));
       if(privateModel.pack(state,catalogue).episodes.length+fresh.length>1000)throw new Error('Limite de 1 000 références personnelles atteinte.');
       for(const episode of fresh){youtubeMetadata.set(episode.id,episode);state.episodes.push({...episode,showId:show.id,apiImported:true,newRelease:true,added:Date.now(),note:''});}
-      if(!show.cover)show.cover=fresh[0]?.id||showCover(show);
+      if(fresh.length)updateAutomaticCover(show);
       if(lastResult)adoptSource(show,lastResult);
       show.releaseAfter=new Date(Math.max(boundary,started-5*60000)).toISOString();show.customRule=true;
       applyYoutubeMetadata();
@@ -361,10 +361,22 @@ function toast(message) {
   toastTimer = setTimeout(() => element.classList.remove('visible'),3500);
 }
 function route() {
-  const parts = location.hash.replace(/^#\/?/,'').split('/');
+  const [path,query='']=location.hash.replace(/^#\/?/,'').split('?');
+  const parts=path.split('/'),params=new URL(`https://youtube-favs.invalid/?${query}`).searchParams;
   let id;try{id=decodeURIComponent(parts[1]||'');}catch{id='';}
-  return {page:['explore','favorites'].includes(parts[0])?'shows':parts[0]||'shows',id};
+  return {page:['explore','favorites'].includes(parts[0])?'shows':parts[0]||'shows',id,channelId:params.get('channel')||'',showId:params.get('show')||''};
 }
+const watchContext=()=>route().page==='watchlist';
+const browseKind=()=>watchContext()?(['channels','shows','episodes'].includes(route().id)?route().id:'episodes'):route().page;
+function categoryName(show){return show?.category?.trim()||'Personnel';}
+function categories(){return [...new Map(state.shows.map(show=>[normalize(categoryName(show)),categoryName(show)])).values()].sort((a,b)=>a.localeCompare(b,'fr'));}
+function categoryInput(value='Personnel'){
+  return `<label>Catégorie<input name="category" maxlength="60" list="showCategories" value="${escapeHtml(value)}" placeholder="Ex. Jeux vidéo, Actualité, Culture…"><datalist id="showCategories">${categories().map(category=>`<option value="${escapeHtml(category)}"></option>`).join('')}</datalist></label>`;
+}
+function matchesCategory(show){return filter.category==='all'||normalize(categoryName(show))===normalize(filter.category);}
+function channelKey(show){return show.channelId||normalize(show.channel);}
+function showHref(id){return watchContext()?`#/watchlist/episodes?show=${encodeURIComponent(id)}`:`#/show/${id}`;}
+function channelHref(id){return watchContext()?`#/watchlist/shows?channel=${encodeURIComponent(id)}`:`#/channel/${encodeURIComponent(id)}`;}
 const showFor = id => state.shows.find(s => s.id === id);
 const image = id => /^[\w-]{11}$/.test(id || '') ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : '';
 function imageTag(id, alt = '') {
@@ -374,31 +386,41 @@ function heading(eyebrow,title,description,action='') {
   return `<div class="title-row"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="sub">${description}</p></div>${action}</div>`;
 }
 function libraryTabs(){
-  const page=route().page;
-  return `<nav class="library-tabs" aria-label="Explorer ma bibliothèque">${[['channels','Chaînes'],['shows','Émissions'],['episodes','Épisodes']].map(([id,label])=>`<a href="#/${id}" class="${page===id?'active':''}">${label}</a>`).join('')}</nav>`;
+  const page=browseKind(),prefix=watchContext()?'watchlist/':'';
+  return `<nav class="library-tabs" aria-label="Explorer ${watchContext()?'les épisodes à voir':'ma bibliothèque'}">${[['channels','Chaînes'],['shows','Émissions'],['episodes','Épisodes']].map(([id,label])=>`<a href="#/${prefix}${id}" class="${page===id?'active':''}">${label}</a>`).join('')}</nav>`;
 }
-function showCover(show){return show.cover||visibleEpisodes().find(episode=>episode.showId===show.id)?.id||'';}
-function channels(){
+function latestEpisode(show){
+  return state.episodes.filter(episode=>episode.showId===show.id&&!episode.hidden).sort((a,b)=>(Date.parse(b.publishedAt)||0)-(Date.parse(a.publishedAt)||0)||(b.added||0)-(a.added||0))[0];
+}
+function updateAutomaticCover(show){
+  if(show.coverMode!=='manual'){show.cover=latestEpisode(show)?.id||show.cover||'';show.coverMode='auto';show.coverUrl='';}
+}
+function showCover(show){return show.cover||latestEpisode(show)?.id||'';}
+function channels(shows=state.shows){
   const groups=new Map();
-  for(const show of state.shows){
-    const key=show.channelId||normalize(show.channel);
-    if(!groups.has(key))groups.set(key,{id:key,name:show.channel,shows:[],cover:showCover(show),source:show.channelSource|| (show.mode!=='playlist'?show.source:'')});
+  for(const show of shows){
+    const key=channelKey(show);
+    if(!groups.has(key))groups.set(key,{id:key,name:show.channel,shows:[],cover:showCover(show),coverShow:show,source:show.channelSource||(show.mode!=='playlist'?show.source:'')});
     const group=groups.get(key);group.shows.push(show);if(!group.cover)group.cover=showCover(show);
   }
   return [...groups.values()];
 }
 function toolbar(kind){
-  const shows=kind==='shows'||kind==='channels';
-  return `<div class="toolbar"><label class="search">${icon('search')}<input id="search" aria-label="Rechercher dans ma bibliothèque" placeholder="Rechercher ${shows?'une chaîne, une émission':'un épisode'}…" value="${escapeHtml(filter.query)}" autocomplete="off"></label>${!shows?`<select id="showFilter" aria-label="Émission"><option value="all">Toutes les émissions</option>${state.shows.map(show=>`<option value="${show.id}" ${filter.show===show.id?'selected':''}>${escapeHtml(show.name)}</option>`).join('')}</select><select id="sort" aria-label="Trier"><option value="newest" ${filter.sort==='newest'?'selected':''}>Plus récents</option><option value="oldest" ${filter.sort==='oldest'?'selected':''}>Plus anciens</option><option value="title" ${filter.sort==='title'?'selected':''}>Titre A → Z</option></select>`:''}<div class="view-switch">${['grid','list'].map(view=>`<button data-view="${view}" class="${state.view===view?'active':''}" aria-label="Vue ${view==='grid'?'galerie':'liste'}">${icon(view)}</button>`).join('')}</div></div>`;
+  const groups=kind==='shows'||kind==='channels',current=route();
+  const selectedShow=current.page==='watchlist'?current.showId||filter.show:filter.show;
+  return `<div class="toolbar"><label class="search">${icon('search')}<input id="search" aria-label="Rechercher une chaîne, une émission ou un épisode" placeholder="Rechercher une chaîne, une émission, un épisode…" value="${escapeHtml(filter.query)}" autocomplete="off"></label><select id="categoryFilter" aria-label="Catégorie"><option value="all">Toutes les catégories</option>${categories().map(category=>`<option value="${escapeHtml(category)}" ${normalize(filter.category)===normalize(category)?'selected':''}>${escapeHtml(category)}</option>`).join('')}</select>${!groups?`<select id="showFilter" aria-label="Émission"><option value="all">Toutes les émissions</option>${state.shows.map(show=>`<option value="${show.id}" ${selectedShow===show.id?'selected':''}>${escapeHtml(show.name)}</option>`).join('')}</select>`:''}<select id="sort" aria-label="Trier"><option value="newest" ${filter.sort==='newest'?'selected':''}>Plus récents</option><option value="oldest" ${filter.sort==='oldest'?'selected':''}>Plus anciens</option><option value="title" ${filter.sort==='title'?'selected':''}>Titre A → Z</option></select><div class="view-switch">${['grid','list'].map(view=>`<button data-view="${view}" class="${state.view===view?'active':''}" aria-label="Vue ${view==='grid'?'galerie':'liste'}">${icon(view)}</button>`).join('')}</div></div>`;
 }
-function coverMarkup(show){return imageTag(showCover(show))||`<span class="cover-placeholder" aria-hidden="true">${escapeHtml(show.initials||show.name.slice(0,2))}</span>`;}
+function coverMarkup(show){
+  if(show.coverMode==='manual'&&show.coverUrl)return `<img src="${escapeHtml(show.coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+  return imageTag(showCover(show))||`<span class="cover-placeholder" aria-hidden="true">${escapeHtml(show.initials||show.name.slice(0,2))}</span>`;
+}
 function showCard(show){
-  const episodes=visibleEpisodes().filter(episode=>episode.showId===show.id),watched=episodes.filter(episode=>state.watched.includes(episode.id)).length;
-  return `<article class="card show-card" data-key="show-${show.id}"><a class="cover" href="#/show/${show.id}" aria-label="${escapeHtml(show.name)}">${coverMarkup(show)}<span class="cover-title"><small>${escapeHtml(show.channel)}</small>${escapeHtml(show.name)}</span></a><div class="card-body"><div class="channel"><span class="channel-avatar">${escapeHtml(show.initials)}</span>${escapeHtml(show.channel)}<span class="small muted" style="margin-left:auto">${episodes.length} épisodes</span></div><div class="progress"><span style="width:${episodes.length?watched/episodes.length*100:0}%"></span></div><p class="small">${watched} vus · ${episodes.length-watched} à voir</p><div class="card-bottom"><a href="#/show/${show.id}" class="text-button">Explorer les épisodes ${icon('arrow')}</a><button data-youtube="${show.id}" aria-label="Importer des épisodes de ${escapeHtml(show.name)}">${icon('plus')} Importer</button></div></div></article>`;
+  const episodes=(watchContext()?filteredEpisodes():visibleEpisodes()).filter(episode=>episode.showId===show.id),watched=episodes.filter(episode=>state.watched.includes(episode.id)).length;
+  return `<article class="card show-card" data-key="show-${show.id}"><a class="cover" href="${showHref(show.id)}" aria-label="${escapeHtml(show.name)}">${coverMarkup(show)}<span class="cover-title"><small>${escapeHtml(show.channel)}</small>${escapeHtml(show.name)}</span></a><div class="card-body"><div class="channel"><span class="channel-avatar">${escapeHtml(show.initials)}</span>${escapeHtml(show.channel)}<span class="small muted" style="margin-left:auto">${episodes.length} épisodes</span></div><span class="category-tag">${escapeHtml(categoryName(show))}</span>${watchContext()?`<p class="small">${episodes.length} à voir · ${episodes.filter(episode=>episode.newRelease).length} nouveautés</p>`:`<div class="progress"><span style="width:${episodes.length?watched/episodes.length*100:0}%"></span></div><p class="small">${watched} vus · ${episodes.length-watched} à voir</p>`}<div class="card-bottom"><a href="${showHref(show.id)}" class="text-button">Explorer les épisodes ${icon('arrow')}</a><button data-youtube="${show.id}" aria-label="Importer des épisodes de ${escapeHtml(show.name)}">${icon('plus')} Importer</button></div></div></article>`;
 }
 function channelCard(channel){
-  const episodes=visibleEpisodes().filter(episode=>channel.shows.some(show=>show.id===episode.showId));
-  return `<article class="card show-card" data-key="channel-${escapeHtml(channel.id)}"><a class="cover" href="#/channel/${encodeURIComponent(channel.id)}">${imageTag(channel.cover)||`<span class="cover-placeholder">${escapeHtml(channel.name.slice(0,2))}</span>`}<span class="cover-title"><small>Chaîne YouTube</small>${escapeHtml(channel.name)}</span></a><div class="card-body"><p>${channel.shows.length} émissions · ${episodes.length} épisodes</p><a href="#/channel/${encodeURIComponent(channel.id)}" class="text-button">Explorer la chaîne ${icon('arrow')}</a></div></article>`;
+  const episodes=(watchContext()?filteredEpisodes():visibleEpisodes()).filter(episode=>channel.shows.some(show=>show.id===episode.showId));
+  return `<article class="card show-card" data-key="channel-${escapeHtml(channel.id)}"><a class="cover" href="${channelHref(channel.id)}">${channel.coverShow?coverMarkup(channel.coverShow):imageTag(channel.cover)}<span class="cover-title"><small>Chaîne YouTube</small>${escapeHtml(channel.name)}</span></a><div class="card-body"><p>${channel.shows.length} émissions · ${episodes.length} épisodes${watchContext()?' à voir':''}</p><a href="${channelHref(channel.id)}" class="text-button">Explorer la chaîne ${icon('arrow')}</a></div></article>`;
 }
 function watchedButton(episode,player=false){
   const watched=state.watched.includes(episode.id);
@@ -406,22 +428,37 @@ function watchedButton(episode,player=false){
 }
 function episodeCard(episode){
   const show=showFor(episode.showId);
-  return `<article class="card episode" data-key="episode-${episode.id}"><button class="cover" data-play="${episode.id}" aria-label="Regarder ${escapeHtml(episode.title)}">${imageTag(episode.id)}${episode.newRelease?'<span class="tag red">NOUVEAUTÉ</span>':''}<span class="play-overlay"><span>▶</span></span>${state.watched.includes(episode.id)?'<span class="tag">✓ VU</span>':''}</button><div class="card-body"><a class="episode-show" href="#/show/${show.id}">${escapeHtml(show.name)}</a><h3><button class="text-button" data-play="${episode.id}">${escapeHtml(episode.title)}</button></h3><span class="small">${episodeMetadata(episode,show.channel)}</span><div class="actions"><button class="text-button" data-play="${episode.id}">▶ Regarder</button><div class="actions">${watchedButton(episode)}<button class="icon-button danger" data-remove-video="${episode.id}" aria-label="Supprimer ${escapeHtml(episode.title)} de ma bibliothèque" title="Supprimer de ma bibliothèque">${icon('trash')}</button></div></div></div></article>`;
+  return `<article class="card episode" data-key="episode-${episode.id}"><button class="cover" data-play="${episode.id}" aria-label="Regarder ${escapeHtml(episode.title)}">${imageTag(episode.id)}${episode.newRelease?'<span class="tag red">NOUVEAUTÉ</span>':''}<span class="play-overlay"><span>▶</span></span>${state.watched.includes(episode.id)?'<span class="tag">✓ VU</span>':''}</button><div class="card-body"><a class="episode-show" href="${showHref(show.id)}">${escapeHtml(show.name)}</a><span class="category-tag episode-category">${escapeHtml(categoryName(show))}</span><h3><button class="text-button" data-play="${episode.id}">${escapeHtml(episode.title)}</button></h3><span class="small">${episodeMetadata(episode,show.channel)}</span><div class="actions"><button class="text-button" data-play="${episode.id}">▶ Regarder</button><div class="actions">${watchedButton(episode)}<button class="icon-button danger" data-remove-video="${episode.id}" aria-label="Supprimer ${escapeHtml(episode.title)} de ma bibliothèque" title="Supprimer de ma bibliothèque">${icon('trash')}</button></div></div></div></article>`;
 }
 function filteredEpisodes(){
-  const current=route(),group=channels().find(channel=>channel.id===current.id);
-  return visibleEpisodes().filter(episode=>(current.page!=='show'||episode.showId===current.id)&&(current.page!=='channel-episodes'||group?.shows.some(show=>show.id===episode.showId))&&(current.page!=='watchlist'||!state.watched.includes(episode.id))&&(filter.show==='all'||episode.showId===filter.show)&&normalize(`${episode.title} ${showFor(episode.showId)?.name} ${showFor(episode.showId)?.channel}`).includes(normalize(filter.query))).sort((a,b)=>filter.sort==='title'?a.title.localeCompare(b.title,'fr'):filter.sort==='oldest'?(Date.parse(a.publishedAt)||a.added||0)-(Date.parse(b.publishedAt)||b.added||0):(Date.parse(b.publishedAt)||b.added||0)-(Date.parse(a.publishedAt)||a.added||0));
+  const current=route(),channel=current.page==='channel-episodes'?current.id:current.page==='watchlist'?current.channelId:'';
+  return visibleEpisodes().filter(episode=>{
+    const show=showFor(episode.showId);if(!show||!matchesCategory(show))return false;
+    return (current.page!=='show'||episode.showId===current.id)&&(!channel||channelKey(show)===channel)&&(current.page!=='watchlist'||!state.watched.includes(episode.id))&&(!current.showId||episode.showId===current.showId)&&(filter.show==='all'||episode.showId===filter.show)&&normalize(`${episode.title} ${show.name} ${show.channel}`).includes(normalize(filter.query));
+  }).sort((a,b)=>filter.sort==='title'?a.title.localeCompare(b.title,'fr'):filter.sort==='oldest'?(Date.parse(a.publishedAt)||a.added||0)-(Date.parse(b.publishedAt)||b.added||0):(Date.parse(b.publishedAt)||b.added||0)-(Date.parse(a.publishedAt)||a.added||0));
+}
+function resultShows(){
+  const current=route(),episodes=filteredEpisodes(),channel=current.page==='channel'?current.id:current.page==='watchlist'?current.channelId:'';
+  return state.shows.filter(show=>matchesCategory(show)&&(!channel||channelKey(show)===channel)&&(!current.showId||show.id===current.showId)&&(filter.show==='all'||show.id===filter.show)&&(!watchContext()||episodes.some(episode=>episode.showId===show.id))&&(normalize(`${show.name} ${show.channel}`).includes(normalize(filter.query))||episodes.some(episode=>episode.showId===show.id)));
+}
+function sortGroups(records,isChannels,episodes){
+  const ids=record=>new Set(isChannels?record.shows.map(show=>show.id):[record.id]);
+  const time=record=>{
+    const shows=ids(record),dates=episodes.filter(episode=>shows.has(episode.showId)).map(episode=>Date.parse(episode.publishedAt)||episode.added||0);
+    return dates.length?(filter.sort==='oldest'?Math.min(...dates):Math.max(...dates)):0;
+  };
+  return records.sort((a,b)=>filter.sort==='title'?a.name.localeCompare(b.name,'fr'):filter.sort==='oldest'?time(a)-time(b):time(b)-time(a));
 }
 function updateResults(){
   const node=document.querySelector('#results');if(!node)return;
-  const current=route(),channel=channels().find(group=>group.id===current.id);
-  const shows=['shows','channel'].includes(current.page),isChannels=current.page==='channels';
-  const records=isChannels?channels().filter(group=>normalize(group.name).includes(normalize(filter.query))):shows?state.shows.filter(show=>(current.page!=='channel'||channel?.shows.some(item=>item.id===show.id))&&normalize(`${show.name} ${show.channel}`).includes(normalize(filter.query))):filteredEpisodes();
+  const current=route(),kind=browseKind(),shows=['shows','channel'].includes(kind),isChannels=kind==='channels';
+  const episodes=filteredEpisodes(),programmes=resultShows();
+  const records=isChannels?sortGroups(channels(programmes),true,episodes):shows?sortGroups(programmes,false,episodes):episodes;
   document.querySelector('#resultCount').textContent=String(records.length);
   const className=state.view==='grid'?`grid ${shows||isChannels?'show-grid':''}`:'list';
-  node.className=current.page==='watchlist'?'':className;
+  node.className=watchContext()&&!shows&&!isChannels?'':className;
   const empty=`<div class="empty"><h2>${state.shows.length?'Aucun résultat pour le moment':'Votre bibliothèque commence ici'}</h2><p>${state.shows.length?'Essayez un autre filtre ou importez des épisodes.':'Importez votre première émission ou une chaîne YouTube.'}</p><button class="primary" data-action="add-show">${icon('plus')} Suivre une émission</button></div>`;
-  if(current.page==='watchlist'){
+  if(watchContext()&&!shows&&!isChannels){
     const fresh=records.filter(episode=>episode.newRelease),backlog=records.filter(episode=>!episode.newRelease);
     syncMarkup(node,`<section class="watch-section" data-key="new-releases"><h2>Nouvelles sorties <span class="count">${fresh.length}</span></h2><div class="${className}">${fresh.map(episodeCard).join('')||'<p class="muted">Aucune nouvelle sortie à regarder pour le moment.</p>'}</div></section><section class="watch-section" data-key="backlog"><h2>Épisodes non vus <span class="count">${backlog.length}</span></h2><div class="${className}">${backlog.map(episodeCard).join('')||'<p class="muted">Tous vos épisodes importés sont vus.</p>'}</div></section>`);
     if(!state.shows.length)syncMarkup(node,empty);
@@ -439,10 +476,12 @@ function channelPage(id,episodes=false){
 function detailPage(id){
   const show=showFor(id);if(!show)return heading('Bibliothèque','Émission introuvable','')+'<a href="#/shows">Mes émissions</a>';
   const episodes=visibleEpisodes().filter(episode=>episode.showId===id);
-  return `<a href="#/shows" class="back">← Mes émissions</a><section class="detail-hero"><div><div class="eyebrow"><a href="#/channel/${encodeURIComponent(show.channelId||normalize(show.channel))}">${escapeHtml(show.channel)}</a></div><h1>${escapeHtml(show.name)}</h1><p class="sub">${escapeHtml(show.description)}</p><div class="stats"><div><strong>${episodes.length}</strong>épisodes importés</div><div><strong>${episodes.filter(episode=>!state.watched.includes(episode.id)).length}</strong>à voir</div></div><div class="actions"><button data-edit-show="${id}">${icon('settings')} Règles d’importation</button><button data-add-video="${id}">${icon('plus')} Ajouter une vidéo</button><button data-mark-show-watched="${id}" ${episodes.every(episode=>state.watched.includes(episode.id))?'disabled':''}>${icon('check')} Tout marquer comme vu</button><button class="danger" data-remove-show="${id}">${icon('trash')} Supprimer l’émission</button></div></div>${coverMarkup(show)}</section>${youtubePanel(show)}${toolbar('episodes')}<span id="resultCount" class="count"></span><div id="results"></div>`;
+  return `<a href="#/shows" class="back">← Mes émissions</a><section class="detail-hero"><div><div class="eyebrow"><a href="#/channel/${encodeURIComponent(show.channelId||normalize(show.channel))}">${escapeHtml(show.channel)}</a></div><h1>${escapeHtml(show.name)}</h1><p class="sub">${escapeHtml(show.description)}</p><button class="category-tag" data-edit-appearance="${id}" title="Modifier la catégorie et la couverture">${escapeHtml(categoryName(show))} ${icon('settings')}</button><div class="stats"><div><strong>${episodes.length}</strong>épisodes importés</div><div><strong>${episodes.filter(episode=>!state.watched.includes(episode.id)).length}</strong>à voir</div></div><div class="actions"><button data-edit-show="${id}">${icon('settings')} Règles d’importation</button><button data-add-video="${id}">${icon('plus')} Ajouter une vidéo</button><button data-mark-show-watched="${id}" ${episodes.every(episode=>state.watched.includes(episode.id))?'disabled':''}>${icon('check')} Tout marquer comme vu</button><button class="danger" data-remove-show="${id}">${icon('trash')} Supprimer l’émission</button></div></div><button class="show-cover-editor" data-edit-appearance="${id}" aria-label="Modifier la couverture de ${escapeHtml(show.name)}">${coverMarkup(show)}<span>${icon('settings')} Modifier la couverture</span></button></section>${youtubePanel(show)}${toolbar('episodes')}<span id="resultCount" class="count"></span><div id="results"></div>`;
 }
 function watchPage(){
-  return heading('Votre prochaine séance','À voir','Les nouvelles sorties et tous les épisodes que vous n’avez pas encore vus.',`<button data-action="check-releases" ${newsState.busy?'disabled':''}>${newsState.busy?'Recherche en cours…':'Vérifier les nouveautés'}</button>`)+`<section class="panel"><p role="status" aria-live="polite">${escapeHtml(newsState.message||'Recherche des nouvelles sorties à l’ouverture de cet onglet.')}</p>${newsState.errors.length?`<details><summary>${newsState.errors.length} source(s) à vérifier</summary><ul>${newsState.errors.map(message=>`<li>${escapeHtml(message)}</li>`).join('')}</ul></details>`:''}</section>`+toolbar('episodes')+`<span id="resultCount" class="count"></span><div id="results"></div>`;
+  const current=route(),scope=current.showId?showFor(current.showId)?.name:current.channelId?channels().find(channel=>channel.id===current.channelId)?.name:'';
+  const scopeLabel=scope?`<p class="scope-label">${escapeHtml(scope)} <a class="text-button" href="#/watchlist/${browseKind()}">Retirer ce filtre</a></p>`:'';
+  return heading('Votre prochaine séance','À voir','Les nouvelles sorties et tous les épisodes que vous n’avez pas encore vus.',`<button data-action="check-releases" ${newsState.busy?'disabled':''}>${newsState.busy?'Recherche en cours…':'Vérifier les nouveautés'}</button>`)+`<section class="panel"><p role="status" aria-live="polite">${escapeHtml(newsState.message||'Recherche des nouvelles sorties à l’ouverture de cet onglet.')}</p>${newsState.errors.length?`<details><summary>${newsState.errors.length} source(s) à vérifier</summary><ul>${newsState.errors.map(message=>`<li>${escapeHtml(message)}</li>`).join('')}</ul></details>`:''}</section>`+scopeLabel+libraryTabs()+toolbar(browseKind())+`<span id="resultCount" class="count"></span><div id="results"></div>`;
 }
 function settingsPage() {
   const colors=['#f15a61','#e7bc75','#80bfa3','#83aaff','#ba9af1'];
@@ -455,8 +494,8 @@ function aboutPage(){
 let newsVisit=false;
 function render(){
   accountChrome();if(cloudStatus.phase!=='ready'){app.innerHTML=authPage();return;}
-  const current=route(),key=`${current.page}/${current.id||''}`;
-  if(key!==lastRoute){filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute=key;if(modal.open)closeModal();}
+  const current=route(),key=`${current.page}/${current.id||''}/${current.channelId}/${current.showId}`;
+  if(key!==lastRoute){const sameScope=lastRoute&&lastRoute.startsWith('watchlist/')===(current.page==='watchlist')&&['shows','channels','episodes','watchlist'].includes(current.page);if(!sameScope)filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute=key;if(modal.open)closeModal();}
   document.querySelectorAll('[data-nav]').forEach(link=>{const active=link.dataset.nav===(current.page==='watchlist'?'watchlist':'library');link.classList.toggle('active',active);});
   if(['shows','channels','episodes'].includes(current.page))syncMarkup(app,showPage(),{preserveResults:true});
   else if(current.page==='show')syncMarkup(app,detailPage(current.id),{preserveResults:true});
@@ -484,8 +523,44 @@ function clearChannelSearch(){
 function showForm(id){
   const show=showFor(id);clearChannelSearch();channelMatches=[];
   selectedChannel=show?(knownChannel(show.channel)||null):null;
-  openModal(modalHeading(show?'Règles d’importation':'Suivre une émission')+`<form id="showForm" data-id="${escapeHtml(id||'')}" data-method="${show?.mode||'keywords'}" class="form-grid"><label>Nom de l’émission<input name="name" required maxlength="100" value="${escapeHtml(show?.name||'')}" placeholder="Ex. Papy Grenier"></label><div class="channel-field"><label>Chaîne YouTube<input name="channel" required maxlength="100" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="channelMatches" aria-expanded="false" value="${escapeHtml(show?.channel||'')}" placeholder="Rechercher un nom ou @identifiant"></label><div id="channelMatches" role="listbox" aria-label="Chaînes YouTube proposées" hidden></div><p id="channelSearchStatus" class="hint" role="status" aria-live="polite">Recherchez une chaîne ou choisissez une chaîne déjà importée.</p></div><label>Méthode d’import<select name="mode"><option value="keywords" ${show?.mode==='keywords'?'selected':''}>Émission dans une chaîne</option><option value="playlist" ${show?.mode==='playlist'?'selected':''}>Playlist YouTube</option><option value="channel" ${show?.mode==='channel'?'selected':''}>Chaîne entière</option></select></label><label><span id="sourceLabel">Lien de la chaîne</span><input name="source" type="url" value="${escapeHtml(show?.source||'')}" placeholder="https://www.youtube.com/…"><span class="hint">Le lien de la chaîne est rempli lors de votre choix. Pour une playlist, collez son lien.</span></label><div class="rule-preview" id="rulePreview"></div><p class="hint">Prévisualisez les vidéos, choisissez lesquelles importer et indiquez si vous les avez déjà vues.</p><p id="formError" class="form-error" role="alert"></p><div class="form-footer"><button type="button" data-close>Annuler</button><button class="primary">Prévisualiser les vidéos</button></div></form>`);
+  openModal(modalHeading(show?'Règles d’importation':'Suivre une émission')+`<form id="showForm" data-id="${escapeHtml(id||'')}" data-method="${show?.mode||'keywords'}" class="form-grid"><label>Nom de l’émission<input name="name" required maxlength="100" value="${escapeHtml(show?.name||'')}" placeholder="Ex. Papy Grenier"></label>${categoryInput(categoryName(show))}<div class="channel-field"><label>Chaîne YouTube<input name="channel" required maxlength="100" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="channelMatches" aria-expanded="false" value="${escapeHtml(show?.channel||'')}" placeholder="Rechercher un nom ou @identifiant"></label><div id="channelMatches" role="listbox" aria-label="Chaînes YouTube proposées" hidden></div><p id="channelSearchStatus" class="hint" role="status" aria-live="polite">Recherchez une chaîne ou choisissez une chaîne déjà importée.</p></div><label>Méthode d’import<select name="mode"><option value="keywords" ${show?.mode==='keywords'?'selected':''}>Émission dans une chaîne</option><option value="playlist" ${show?.mode==='playlist'?'selected':''}>Playlist YouTube</option><option value="channel" ${show?.mode==='channel'?'selected':''}>Chaîne entière</option></select></label><label><span id="sourceLabel">Lien de la chaîne</span><input name="source" type="url" value="${escapeHtml(show?.source||'')}" placeholder="https://www.youtube.com/…"><span class="hint">Le lien de la chaîne est rempli lors de votre choix. Pour une playlist, collez son lien.</span></label><div class="rule-preview" id="rulePreview"></div><p class="hint">Prévisualisez les vidéos, choisissez lesquelles importer et indiquez si vous les avez déjà vues.</p><p id="formError" class="form-error" role="alert"></p><div class="form-footer"><button type="button" data-close>Annuler</button><button class="primary">Prévisualiser les vidéos</button></div></form>`);
   updateRulePreview();
+}
+function appearanceForm(id){
+  const show=showFor(id);if(!show)return;
+  const episodes=visibleEpisodes().filter(episode=>episode.showId===id).sort((a,b)=>(Date.parse(b.publishedAt)||b.added||0)-(Date.parse(a.publishedAt)||a.added||0)).slice(0,12);
+  const manual=show.coverMode==='manual';
+  openModal(modalHeading('Personnaliser l’émission')+`<form id="appearanceForm" data-id="${id}" class="form-grid"><p>${escapeHtml(show.name)}</p>${categoryInput(categoryName(show))}<label>Couverture<select name="coverMode"><option value="auto" ${!manual?'selected':''}>Automatique · dernière vidéo importée</option><option value="manual" ${manual?'selected':''}>Choisir mon image</option></select></label><label>Image ou vidéo YouTube<input type="url" name="coverSource" maxlength="2000" value="${escapeHtml(show.coverUrl||(show.cover?`https://www.youtube.com/watch?v=${show.cover}`:''))}" placeholder="Lien HTTPS d’une image ou d’une vidéo YouTube"><span class="hint">Choisissez une miniature ci-dessous ou collez le lien d’une image. Une couverture manuelle sera conservée lors des nouvelles sorties.</span></label><div id="coverPreview" class="cover-preview"></div>${episodes.length?`<div class="cover-options" aria-label="Miniatures des épisodes">${episodes.map(episode=>`<button type="button" data-cover-video="${episode.id}" aria-label="Choisir la miniature de ${escapeHtml(episode.title)}" title="${escapeHtml(episode.title)}">${imageTag(episode.id)}<span>${escapeHtml(episode.title)}</span></button>`).join('')}</div>`:''}<p id="appearanceError" class="form-error" role="alert"></p><div class="form-footer"><button type="button" data-close>Annuler</button><button class="primary">Enregistrer</button></div></form>`);
+  updateCoverPreview();
+}
+function chooseCoverVideo(id){
+  const form=document.querySelector('#appearanceForm');if(!form)return;
+  const episode=state.episodes.find(item=>item.id===id&&item.showId===form.dataset.id&&!item.hidden);if(!episode)return;
+  form.querySelector('[name="coverMode"]').value='manual';
+  form.querySelector('[name="coverSource"]').value=`https://www.youtube.com/watch?v=${id}`;
+  updateCoverPreview();
+}
+function updateCoverPreview(){
+  const form=document.querySelector('#appearanceForm');if(!form)return;
+  const show=showFor(form.dataset.id);if(!show)return;
+  const manual=form.querySelector('[name="coverMode"]').value==='manual',input=form.querySelector('[name="coverSource"]');input.disabled=!manual;
+  const source=input.value.trim(),id=manual?videoId(source):latestEpisode(show)?.id||showCover(show);
+  const url=manual&&!id?privateModel.cleanCoverUrl(source):image(id);
+  document.querySelector('#coverPreview').innerHTML=url?`<img src="${escapeHtml(url)}" alt="Aperçu de la couverture" referrerpolicy="no-referrer">`:'<p class="hint">Choisissez une image pour afficher son aperçu.</p>';
+}
+async function saveAppearance(form,values){
+  const show=showFor(form.dataset.id);if(!show)return;
+  const mode=values.get('coverMode'),source=String(values.get('coverSource')||'').trim(),category=String(values.get('category')||'').trim().slice(0,60)||'Personnel';
+  if(!['auto','manual'].includes(mode))return;
+  if(mode==='manual'){
+    const id=videoId(source),url=id?'':privateModel.cleanCoverUrl(source);
+    if(!id&&!url){document.querySelector('#appearanceError').textContent='Choisissez une miniature ou un lien HTTPS valide vers une image.';return;}
+    if(!id&&youtubeUrl(source)){document.querySelector('#appearanceError').textContent='Utilisez un lien de vidéo YouTube ou un lien direct vers une image.';return;}
+    show.cover=id||'';show.coverUrl=url;show.coverMode='manual';
+  }else{show.coverMode='auto';updateAutomaticCover(show);}
+  show.category=category;show.customRule=true;
+  const generation=youtubeGeneration;closeModal();render();
+  if(await save()&&generation===youtubeGeneration)toast('Catégorie et couverture enregistrées.');
 }
 function knownChannel(name){
   const show=state.shows.find(item=>normalize(item.channel)===normalize(name));
@@ -617,6 +692,8 @@ document.addEventListener('click',async event=>{
   if(data.removeShow)return requestShowRemoval(data.removeShow);
   if(data.markShowWatched)return markShowWatched(data.markShowWatched);
   if(data.selectChannel!==undefined)return selectChannel(Number(data.selectChannel));
+  if(data.editAppearance)return appearanceForm(data.editAppearance);
+  if(data.coverVideo)return chooseCoverVideo(data.coverVideo);
   if(data.editShow) return showForm(data.editShow);
   if(data.addVideo) return videoForm(data.addVideo);
   if(data.view) {state.view=data.view;save();render();return;}
@@ -630,6 +707,7 @@ document.addEventListener('click',async event=>{
 });
 document.addEventListener('input',event=>{
   if(event.target.id==='search'){filter.query=event.target.value;updateResults();}
+  if(event.target.closest?.('#appearanceForm'))updateCoverPreview();
   if(event.target.closest('#showForm')){
     if(event.target.name==='channel')queueChannelSearch(event.target);
     updateRulePreview();
@@ -659,18 +737,21 @@ document.addEventListener('change',event=>{
     }
     renderImportPreview(activeImportId);return;
   }
+  if(event.target.closest?.('#appearanceForm'))updateCoverPreview();
   if(event.target.closest?.('#showForm'))updateRulePreview();
   if(event.target.dataset&&'importWatchedAll' in event.target.dataset){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;progress.defaultWatched=event.target.checked;progress.watched=event.target.checked?new Set(progress.candidates.map(episode=>episode.id)):new Set();renderImportPreview(activeImportId);return;}
   if(event.target.dataset?.importVideo){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;const id=event.target.dataset.importVideo;if(event.target.checked&&canImportVideo(id))progress.selected.add(id);else progress.selected.delete(id);renderImportPreview(activeImportId);return;}
-  if(event.target.id==='showFilter'){filter.show=event.target.value;updateResults();}
+  if(event.target.id==='categoryFilter'){filter.category=event.target.value;updateResults();}
+  if(event.target.id==='showFilter'){if(watchContext()){filter.show='all';location.hash='#/watchlist/episodes'+(event.target.value==='all'?'':`?show=${encodeURIComponent(event.target.value)}`);render();}else{filter.show=event.target.value;updateResults();}}
   if(event.target.id==='sort'){filter.sort=event.target.value;updateResults();}
 });
 document.addEventListener('submit',async event=>{
-  if(!['showForm','videoForm','workerForm'].includes(event.target.id))return;
+  if(!['showForm','videoForm','workerForm','appearanceForm'].includes(event.target.id))return;
   event.preventDefault();
   if(!canEdit())return;
   const form=event.target;
   const values=new FormData(form);
+  if(form.id==='appearanceForm')return saveAppearance(form,values);
   if(form.id==='workerForm'){
     const generation=youtubeGeneration,button=form.querySelector('button');
     button.disabled=true;workerMessage='Vérification du Worker…';document.querySelector('#workerStatus').textContent=workerMessage;
@@ -710,7 +791,7 @@ document.addEventListener('submit',async event=>{
     if(!existing&&state.shows.length>=200)return error('La limite de 200 émissions est atteinte.');
     if(state.shows.some(show=>show.id!==existing?.id&&normalize(show.name)===normalize(name)&&normalize(show.channel)===normalize(channel)))return error('Cette émission existe déjà dans votre bibliothèque.');
     const channelId=resolved?.id||source.pathname.match(/^\/channel\/(UC[\w-]{22})/)?.[1]||(existing?.source===source.href?existing.channelId:'')||'';
-    const record={...(existing||{}),id:existing?.id||crypto.randomUUID(),name,channel,source:source.href,mode,keywords,initials:existing?.initials||channel.slice(0,2).toUpperCase(),description:existing?.description||'Votre émission YouTube.',category:existing?.category||'Personnel',cover:existing?.cover||'',channelId,channelSource:mode!=='playlist'?source.href:resolved?.url||existing?.channelSource||'',releaseAfter:existing?.releaseAfter||new Date().toISOString(),customRule:true};
+    const record={...(existing||{}),id:existing?.id||crypto.randomUUID(),name,channel,source:source.href,mode,keywords,initials:existing?.initials||channel.slice(0,2).toUpperCase(),description:existing?.description||'Votre émission YouTube.',category:String(values.get('category')||existing?.category||'Personnel').trim().slice(0,60)||'Personnel',cover:existing?.cover||'',channelId,channelSource:mode!=='playlist'?source.href:resolved?.url||existing?.channelSource||'',releaseAfter:existing?.releaseAfter||new Date().toISOString(),customRule:true};
     youtubeImports.delete(record.id);
     if(existing)state.shows=state.shows.map(s=>s.id===existing.id?record:s);else state.shows.push(record);
     if(!state.following.includes(record.id))state.following.push(record.id);

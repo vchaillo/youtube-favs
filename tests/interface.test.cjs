@@ -36,7 +36,7 @@ function boot(data={},hash='#/episodes'){
   emit('data',{uid:'alice',data:{...run('privateModel.empty()'),...data}});
   const click=selector=>{const node=document.querySelector(selector);assert.ok(node,selector);node.dispatchEvent(new window.Event('click',{bubbles:true}));};
   const settle=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
-  const submit=async()=>{document.querySelector('#showForm').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await settle();};
+  const submit=async(selector='#showForm')=>{document.querySelector(selector).dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await settle();};
   const fill=(name,value)=>{const input=document.querySelector(`#showForm [name="${name}"]`);input.value=value;return input;};
   return {document,window,run,emit,click,writes,requests,settle,submit,fill,timers};
 }
@@ -230,4 +230,58 @@ test('the browser display preference is restored per account without changing cl
   app.emit('auth',{status:'loading',user:{uid:'bob'}});assert.equal(app.run('showShortVideos'),false);
   app.emit('auth',{status:'loading',user:{uid:'alice'}});assert.equal(app.run('showShortVideos'),true);
   assert.equal(app.writes.length,0);
+});
+
+test('category filters are shared by library views and watchlist views only include unseen programmes',async()=>{
+  const app=boot({shows:[show({category:'Culture'}),show({id:'sports',name:'Sports',category:'Sport',channel:'Sports channel'}),show({id:'empty',name:'Empty programme',category:'Culture',channel:'Empty channel'})],episodes:[video(),video('BBBBBBBBBBB',{showId:'sports'}),video('CCCCCCCCCCC',{newRelease:true})],watched:['AAAAAAAAAAA']},'#/shows');
+  const choose=value=>{const select=app.document.querySelector('#categoryFilter');select.value=value;select.dispatchEvent(new app.window.Event('change',{bubbles:true}));};
+  choose('Culture');assert.equal(app.document.querySelectorAll('.show-card').length,2);
+  app.run("location.hash='#/channels';render()");assert.equal(app.document.querySelectorAll('.show-card').length,2);assert.equal(app.run('filter.category'),'Culture');
+  app.run("location.hash='#/watchlist/shows';render()");await app.settle();choose('Culture');
+  assert.equal(app.document.querySelectorAll('.show-card').length,1);assert.match(app.document.querySelector('#results').textContent,/1 à voir/);
+  app.run("location.hash='#/watchlist/channels';render()");await app.settle();
+  assert.equal(app.document.querySelectorAll('.show-card').length,1);assert.equal(app.run('filter.category'),'Culture');
+  const link=app.document.querySelector('#results a.cover').getAttribute('href');assert.match(link,/watchlist\/shows\?channel=/);
+  app.run(`location.hash=${JSON.stringify(link)};render()`);await app.settle();assert.equal(app.document.querySelectorAll('.show-card').length,1);
+  const episodeLink=app.document.querySelector('#results a.cover').getAttribute('href');
+  app.run(`location.hash=${JSON.stringify(episodeLink)};render()`);await app.settle();
+  assert.equal(app.document.querySelectorAll('.episode').length,1);assert.ok(app.document.querySelector('[data-key="episode-CCCCCCCCCCC"]'));
+  const calls=app.requests.filter(request=>request.action==='catalog').length;
+  app.run("location.hash='#/watchlist/channels';render()");await app.settle();
+  assert.equal(app.requests.filter(request=>request.action==='catalog').length,calls);
+});
+test('search finds programmes and channels through episode titles and sorting works in grouped views',()=>{
+  const app=boot({shows:[show({name:'Ancient',channel:'First'}),show({id:'second',name:'Modern',channel:'Second'})],episodes:[video('AAAAAAAAAAA',{showId:'program'}),video('BBBBBBBBBBB',{showId:'second'})]},'#/channels');
+  app.run("youtubeMetadata.set('AAAAAAAAAAA',{id:'AAAAAAAAAAA',title:'A journey through space',publishedAt:'2025-01-01T00:00:00Z'});youtubeMetadata.set('BBBBBBBBBBB',{id:'BBBBBBBBBBB',title:'A race',publishedAt:'2026-01-01T00:00:00Z'});applyYoutubeMetadata();render()");
+  assert.equal(app.document.querySelector('#results .cover-title').textContent,'Chaîne YouTubeSecond');
+  const search=app.document.querySelector('#search');search.value='space';search.dispatchEvent(new app.window.Event('input',{bubbles:true}));
+  assert.equal(app.document.querySelectorAll('.show-card').length,1);assert.match(app.document.querySelector('#results').textContent,/First/);
+  app.run("location.hash='#/shows';render()");assert.equal(app.document.querySelectorAll('.show-card').length,1);assert.match(app.document.querySelector('#results').textContent,/Ancient/);
+});
+test('category and manual cover changes save without a YouTube import and survive a cloud reload',async()=>{
+  const app=boot({shows:[show()],episodes:[video()]},'#/show/program');
+  app.click('.show-cover-editor');
+  const form=app.document.querySelector('#appearanceForm');
+  form.querySelector('[name="category"]').value='Science';form.querySelector('[name="coverMode"]').value='manual';form.querySelector('[name="coverSource"]').value='https://images.example.com/science.jpg';
+  const calls=app.requests.length;await app.submit('#appearanceForm');
+  assert.equal(app.writes.length,1);assert.equal(app.requests.length,calls);
+  const payload=app.writes.at(-1).next;assert.equal(payload.shows[0].category,'Science');assert.equal(payload.shows[0].coverMode,'manual');assert.equal(payload.shows[0].coverUrl,'https://images.example.com/science.jpg');
+  app.emit('data',{uid:'alice',data:payload});
+  assert.equal(app.document.querySelector('.show-cover-editor img').getAttribute('src'),'https://images.example.com/science.jpg');
+});
+test('cover editing accepts programme thumbnails and rejects unsafe external URLs',async()=>{
+  const app=boot({shows:[show()],episodes:[video()]},'#/show/program');app.click('.show-cover-editor');
+  let form=app.document.querySelector('#appearanceForm');form.querySelector('[name="coverMode"]').value='manual';form.querySelector('[name="coverSource"]').value='javascript:alert(1)';
+  await app.submit('#appearanceForm');assert.equal(app.writes.length,0);assert.match(app.document.querySelector('#appearanceError').textContent,/HTTPS/);
+  app.click('[data-cover-video="AAAAAAAAAAA"]');await app.submit('#appearanceForm');
+  assert.equal(app.writes.at(-1).next.shows[0].cover,'AAAAAAAAAAA');assert.equal(app.writes.at(-1).next.shows[0].coverMode,'manual');assert.equal(app.writes.at(-1).next.shows[0].coverUrl,'');
+});
+test('new releases update automatic covers to the newest publication and preserve manual covers',async()=>{
+  for(const coverMode of ['auto','manual']){
+    const app=boot({shows:[show({cover:'AAAAAAAAAAA',coverMode,coverUrl:coverMode==='manual'?'https://images.example.com/manual.jpg':'',releaseAfter:'2026-01-01T00:00:00Z'})],episodes:[video()]});
+    app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'BBBBBBBBBBB',title:'Earlier release',publishedAt:new Date(Date.now()-20000).toISOString()},{id:'CCCCCCCCCCC',title:'Latest release',publishedAt:new Date(Date.now()-10000).toISOString()}],scanned:2,nextPageToken:null})");
+    await app.run('checkNewReleases()');
+    assert.equal(app.run('state.shows[0].cover'),coverMode==='auto'?'CCCCCCCCCCC':'AAAAAAAAAAA');
+    assert.equal(app.writes.at(-1).next.shows[0].coverUrl,coverMode==='manual'?'https://images.example.com/manual.jpg':'');
+  }
 });
