@@ -495,7 +495,7 @@ let newsVisit=false;
 function render(){
   accountChrome();if(cloudStatus.phase!=='ready'){app.innerHTML=authPage();return;}
   const current=route(),key=`${current.page}/${current.id||''}/${current.channelId}/${current.showId}`;
-  if(key!==lastRoute){const sameScope=lastRoute&&lastRoute.startsWith('watchlist/')===(current.page==='watchlist')&&['shows','channels','episodes','watchlist'].includes(current.page);if(!sameScope)filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute=key;if(modal.open)closeModal();}
+  if(key!==lastRoute){const sameScope=lastRoute&&lastRoute.startsWith('watchlist/')===(current.page==='watchlist')&&['shows','channels','episodes','channel','channel-episodes','watchlist'].includes(current.page);if(!sameScope)filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute=key;if(modal.open)closeModal();}
   document.querySelectorAll('[data-nav]').forEach(link=>{const active=link.dataset.nav===(current.page==='watchlist'?'watchlist':'library');link.classList.toggle('active',active);});
   if(['shows','channels','episodes'].includes(current.page))syncMarkup(app,showPage(),{preserveResults:true});
   else if(current.page==='show')syncMarkup(app,detailPage(current.id),{preserveResults:true});

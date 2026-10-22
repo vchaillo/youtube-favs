@@ -237,6 +237,7 @@ test('category filters are shared by library views and watchlist views only incl
   const choose=value=>{const select=app.document.querySelector('#categoryFilter');select.value=value;select.dispatchEvent(new app.window.Event('change',{bubbles:true}));};
   choose('Culture');assert.equal(app.document.querySelectorAll('.show-card').length,2);
   app.run("location.hash='#/channels';render()");assert.equal(app.document.querySelectorAll('.show-card').length,2);assert.equal(app.run('filter.category'),'Culture');
+  app.run("location.hash='#/channel/my%20channel';render()");assert.equal(app.run('filter.category'),'Culture');assert.equal(app.document.querySelectorAll('.show-card').length,1);
   app.run("location.hash='#/watchlist/shows';render()");await app.settle();choose('Culture');
   assert.equal(app.document.querySelectorAll('.show-card').length,1);assert.match(app.document.querySelector('#results').textContent,/1 à voir/);
   app.run("location.hash='#/watchlist/channels';render()");await app.settle();
