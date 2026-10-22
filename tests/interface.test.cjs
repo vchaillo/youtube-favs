@@ -25,7 +25,7 @@ function boot(data={},hash='#/episodes'){
   const context=vm.createContext({document,window,URL,structuredClone,crypto:require('node:crypto').webcrypto,
     location:{hash},history:{replaceState(){}},
     localStorage:{getItem(){return null;}},
-    setTimeout(fn){const id=++nextTimer;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);},
+    setTimeout(fn,delay){const id=++nextTimer;fn.delay=delay;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);},
     FormData:class{constructor(form){this.form=form;}get(key){return this.form.querySelector(`[name="${key}"]`)?.value||'';}},
     youtubeFavsCloud:{save:async(previous,next)=>{writes.push({previous,next});},youtube:async input=>{requests.push(input);return {episodes:[],channels:[],scanned:0,nextPageToken:null};}},
   });
@@ -140,4 +140,42 @@ test('episode feedback keeps saves immediate, cleans up inert exit copies and re
     if(originalAnimate)prototype.animate=originalAnimate;else delete prototype.animate;
     if(originalRect)prototype.getBoundingClientRect=originalRect;else delete prototype.getBoundingClientRect;
   }
+});
+
+test('successful imports show confirmation only after saving and then close their own dialog',async()=>{
+  const app=boot({shows:[show()]},'#/show/program');
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'An episode'}],scanned:1,nextPageToken:null})");
+  app.click('[data-youtube="program"]');await app.settle();
+  assert.ok(app.document.querySelector('#modal').classList.contains('import-dialog'));
+  app.run('globalThis.youtubeFavsCloud.save=()=>new Promise(resolve=>globalThis.completeImport=resolve)');
+  app.click('[data-action="confirm-youtube-import"]');await app.settle();
+  assert.match(app.document.querySelector('[data-action="confirm-youtube-import"]').textContent,/Import en cours/);
+  assert.equal([...app.timers.values()].some(fn=>fn.delay===1200),false);
+  app.run('completeImport()');await app.settle();
+  const button=app.document.querySelector('[data-action="confirm-youtube-import"]');
+  assert.match(button.textContent,/Importation réussie/);assert.ok(button.disabled);
+  assert.ok(button.querySelector('svg'));assert.ok(app.document.querySelector('#modal').open);
+  const close=[...app.timers.values()].find(fn=>fn.delay===1200);assert.ok(close);
+  close();assert.equal(app.document.querySelector('#modal').open,false);
+  assert.equal(app.document.querySelector('#modal').classList.contains('import-dialog'),false);
+});
+test('an old import completion timer cannot close a different modal',async()=>{
+  const app=boot({shows:[show()]},'#/show/program');
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'An episode'}],scanned:1,nextPageToken:null})");
+  app.click('[data-youtube="program"]');await app.settle();
+  app.click('[data-action="confirm-youtube-import"]');await app.settle();
+  const close=[...app.timers.values()].find(fn=>fn.delay===1200);assert.ok(close);
+  app.run('showForm()');close();
+  assert.ok(app.document.querySelector('#modal').open);assert.ok(app.document.querySelector('#showForm'));
+  assert.equal(app.document.querySelector('#modal').classList.contains('import-dialog'),false);
+});
+test('failed imports never display success or schedule an automatic close',async()=>{
+  const app=boot({shows:[show()]},'#/show/program');
+  app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'An episode'}],scanned:1,nextPageToken:null})");
+  app.click('[data-youtube="program"]');await app.settle();
+  app.run("globalThis.youtubeFavsCloud.save=async()=>{throw new Error('Firestore unavailable');}");
+  app.click('[data-action="confirm-youtube-import"]');await app.settle();
+  assert.equal(app.document.querySelector('.import-success'),null);
+  assert.equal([...app.timers.values()].some(fn=>fn.delay===1200),false);
+  assert.equal(app.run('cloudStatus.phase'),'error');
 });

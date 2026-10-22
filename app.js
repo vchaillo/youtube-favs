@@ -62,7 +62,7 @@ function save() {
 function applyYoutubeMetadata(){
   state.episodes=state.episodes.map(episode=>({...episode,...(youtubeMetadata.get(episode.id)||{}),showId:episode.showId}));
 }
-let activeImportId=null;
+let activeImportId=null,importCloseTimer,modalVersion=0;
 const visibleEpisodes=()=>state.episodes.filter(episode=>!episode.hidden);
 const canImportVideo=id=>!state.episodes.some(episode=>episode.id===id&&!episode.hidden);
 function youtubePanel(show){
@@ -73,15 +73,17 @@ function renderImportPreview(showId){
   if(activeImportId!==showId)return;
   const show=showFor(showId),progress=youtubeImports.get(showId);
   if(!show||!progress)return;
+  modal.classList.add('import-dialog');
+  const locked=progress.committing||progress.success;
   const scrollTop=document.querySelector('.import-results')?.scrollTop||0;
   const focusedVideo=document.activeElement?.dataset?.importVideo;
   const selected=progress.candidates.filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
   const rows=progress.candidates.map(episode=>{
     const existing=state.episodes.find(item=>item.id===episode.id);
     const imported=existing&&!existing.hidden,hidden=existing?.hidden;
-    return `<article class="import-row" data-episode-id="${episode.id}"><label class="import-choice"><input type="checkbox" data-import-video="${episode.id}" ${progress.selected.has(episode.id)&&!imported?'checked':''} ${imported||progress.committing?'disabled':''}><span class="sr-only">Sélectionner ${escapeHtml(episode.title)}</span></label>${imageTag(episode.id)}<div class="import-description"><strong>${escapeHtml(episode.title)}</strong><p class="small">${episodeMetadata(episode,show.channel)}</p><span class="import-badge ${imported?'imported':''}">${imported?`Déjà présente dans ${escapeHtml(showFor(existing.showId)?.name||'votre bibliothèque')}`:hidden?'Retirée de votre bibliothèque · réimportation possible':'Nouvelle vidéo'}</span></div><a class="text-button" href="https://www.youtube.com/watch?v=${episode.id}" target="_blank" rel="noopener noreferrer">Voir ↗</a>${imported?`<button class="icon-button danger" data-remove-video="${episode.id}" aria-label="Supprimer ${escapeHtml(episode.title)} de ma bibliothèque" title="Supprimer de ma bibliothèque" ${progress.committing?'disabled':''}>${icon('trash')}</button>`:`<button class="icon-button ${progress.watched.has(episode.id)?'selected':''}" data-import-watched="${episode.id}" aria-pressed="${progress.watched.has(episode.id)}" aria-label="Importer ${escapeHtml(episode.title)} comme ${progress.watched.has(episode.id)?'non vu':'vu'}" title="${progress.watched.has(episode.id)?'Sera marqué vu':'Sera marqué non vu'}">${icon('check')}</button>`}</article>`;
+    return `<article class="import-row" data-episode-id="${episode.id}"><label class="import-choice"><input type="checkbox" data-import-video="${episode.id}" ${progress.selected.has(episode.id)&&!imported?'checked':''} ${imported||locked?'disabled':''}><span class="sr-only">Sélectionner ${escapeHtml(episode.title)}</span></label>${imageTag(episode.id)}<div class="import-description"><strong>${escapeHtml(episode.title)}</strong><p class="small">${episodeMetadata(episode,show.channel)}</p><span class="import-badge ${imported?'imported':''}">${imported?`Déjà présente dans ${escapeHtml(showFor(existing.showId)?.name||'votre bibliothèque')}`:hidden?'Retirée de votre bibliothèque · réimportation possible':'Nouvelle vidéo'}</span></div><a class="text-button" href="https://www.youtube.com/watch?v=${episode.id}" target="_blank" rel="noopener noreferrer">Voir ↗</a>${imported?`<button class="icon-button danger" data-remove-video="${episode.id}" aria-label="Supprimer ${escapeHtml(episode.title)} de ma bibliothèque" title="Supprimer de ma bibliothèque" ${locked?'disabled':''}>${icon('trash')}</button>`:`<button class="icon-button ${progress.watched.has(episode.id)?'selected':''}" data-import-watched="${episode.id}" ${locked?'disabled':''} aria-pressed="${progress.watched.has(episode.id)}" aria-label="Importer ${escapeHtml(episode.title)} comme ${progress.watched.has(episode.id)?'non vu':'vu'}" title="${progress.watched.has(episode.id)?'Sera marqué vu':'Sera marqué non vu'}">${icon('check')}</button>`}</article>`;
   }).join('');
-  modalContent.innerHTML=modalHeading(`Importer depuis YouTube · ${escapeHtml(show.name)}`)+`<p class="small">${escapeHtml(progress.message)}</p><p class="hint">Aucune vidéo n’est ajoutée avant votre confirmation. Les vidéos déjà présentes sont indiquées ; celles que vous avez retirées restent décochées.</p><div class="import-toolbar"><span>${progress.candidates.length} vidéos trouvées · <strong>${selected.length} sélectionnées</strong></span><div class="actions"><button data-action="import-select-all" ${progress.committing?'disabled':''}>Tout sélectionner</button><button data-action="import-select-none" ${progress.committing?'disabled':''}>Tout désélectionner</button></div></div><label class="import-watched-all"><input type="checkbox" data-import-watched-all ${progress.defaultWatched?'checked':''} ${progress.committing?'disabled':''}> Marquer les vidéos sélectionnées comme vues</label><div class="import-results">${rows||`<p class="empty">${progress.busy?'Recherche des vidéos…':'Aucune vidéo sur les pages analysées.'}</p>`}</div><p class="form-error" role="alert">${escapeHtml(progress.error||'')}</p><div class="import-footer">${progress.busy?'<button data-action="stop-scan">Mettre en pause</button>':''}<button data-close ${progress.committing?'disabled':''}>Fermer</button>${progress.next?`<button data-youtube="${escapeHtml(showId)}" data-continue="true" ${progress.busy||progress.committing?'disabled':''}>Continuer la recherche</button>`:''}<button class="primary" data-action="confirm-youtube-import" ${!selected.length||progress.busy||progress.committing?'disabled':''}>${progress.committing?'Import en cours…':`Importer la sélection (${selected.length})`}</button></div>`;
+  modalContent.innerHTML=modalHeading(`Importer depuis YouTube · ${escapeHtml(show.name)}`)+`<p class="small import-status" role="status">${escapeHtml(progress.message)}</p><p class="hint import-explanation">Aucune vidéo n’est ajoutée avant votre confirmation. Les vidéos déjà présentes sont indiquées ; celles que vous avez retirées restent décochées.</p><div class="import-toolbar"><span>${progress.candidates.length} vidéos trouvées · <strong>${selected.length} sélectionnées</strong></span><div class="actions"><button data-action="import-select-all" ${locked?'disabled':''}>Tout sélectionner</button><button data-action="import-select-none" ${locked?'disabled':''}>Tout désélectionner</button></div></div><label class="import-watched-all"><input type="checkbox" data-import-watched-all ${progress.defaultWatched?'checked':''} ${locked?'disabled':''}> Marquer les vidéos sélectionnées comme vues</label><div class="import-results">${rows||`<p class="empty">${progress.busy?'Recherche des vidéos…':'Aucune vidéo sur les pages analysées.'}</p>`}</div><p class="form-error" role="alert">${escapeHtml(progress.error||'')}</p><div class="import-footer">${progress.busy?'<button data-action="stop-scan">Mettre en pause</button>':''}<button data-close ${progress.committing?'disabled':''}>Fermer</button>${progress.next?`<button data-youtube="${escapeHtml(showId)}" data-continue="true" ${progress.busy||locked?'disabled':''}>Continuer la recherche</button>`:''}<button class="primary ${progress.success?'import-success':''}" data-action="confirm-youtube-import" ${!selected.length||progress.busy||locked?'disabled':''}>${progress.success?`${icon('check')} <span role="status">Importation réussie</span>`:progress.committing?'Import en cours…':`Importer la sélection (${selected.length})`}</button></div>`;
   const results=document.querySelector('.import-results');if(results)results.scrollTop=scrollTop;
   if(focusedVideo)document.querySelector(`[data-import-video="${focusedVideo}"]`)?.focus?.({preventScroll:true});
 }
@@ -90,7 +92,7 @@ async function refreshYoutube(showId,continuing=false){
   if(!canEdit()||!show||previous?.busy||previous?.committing)return;
   const generation=youtubeGeneration,rule=JSON.stringify([show.mode,show.source,show.keywords]);
   const progress=continuing&&previous?previous:{next:null,scanned:0,candidates:[],selected:new Set(),watched:new Set(),defaultWatched:false};
-  progress.busy=true;progress.stop=false;progress.error='';progress.message='Recherche des vidéos sur YouTube…';
+  progress.busy=true;progress.stop=false;progress.success=false;progress.error='';progress.message='Recherche des vidéos sur YouTube…';
   youtubeImports.set(showId,progress);
   if(activeImportId!==showId){openModal('');activeImportId=showId;}
   renderImportPreview(showId);render();
@@ -124,13 +126,13 @@ async function refreshYoutube(showId,continuing=false){
 }
 async function confirmYoutubeImport(){
   const showId=activeImportId,progress=youtubeImports.get(showId);
-  if(!canEdit()||!progress||progress.busy||progress.committing)return;
+  if(!canEdit()||!progress||progress.busy||progress.committing||progress.success)return;
   const selected=progress.candidates.filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
   if(!selected.length)return;
   const existingPayload=privateModel.pack(state,catalogue);
   const extra=selected.filter(episode=>!state.episodes.some(existing=>existing.id===episode.id)).length;
   if(existingPayload.episodes.length+extra>1000){progress.error='La limite de 1 000 ajouts et retraits personnels est atteinte. Réduisez la sélection.';renderImportPreview(showId);return;}
-  const generation=youtubeGeneration;progress.committing=true;renderImportPreview(showId);
+  const generation=youtubeGeneration,viewVersion=modalVersion;progress.committing=true;renderImportPreview(showId);
   for(const episode of selected){
     youtubeMetadata.set(episode.id,episode);
     const existing=state.episodes.find(item=>item.id===episode.id);
@@ -145,9 +147,15 @@ async function confirmYoutubeImport(){
   const saved=await save();
   if(generation!==youtubeGeneration)return;
   progress.committing=false;
-  if(saved){progress.message=`${selected.length} vidéo${selected.length>1?'s':''} importée${selected.length>1?'s':''}. ${progress.next?'Des archives restent à parcourir.':'Dernière page atteinte.'}`;toast('Sélection importée dans votre bibliothèque.');}
+  if(saved){progress.success=true;progress.message=`${selected.length} vidéo${selected.length>1?'s':''} importée${selected.length>1?'s':''}. ${progress.next?'Des archives restent à parcourir.':'Dernière page atteinte.'}`;toast('Importation réussie.');}
   else progress.error='La sélection n’a pas pu être enregistrée. Rechargez votre bibliothèque.';
   render();renderImportPreview(showId);
+  if(saved&&modalVersion===viewVersion&&activeImportId===showId&&modal.open){
+    clearTimeout(importCloseTimer);
+    importCloseTimer=setTimeout(()=>{
+      if(generation===youtubeGeneration&&modalVersion===viewVersion&&activeImportId===showId&&youtubeImports.get(showId)===progress&&progress.success)closeModal();
+    },1200);
+  }
 }
 function cancelRemoval(){
   pendingRemoval=null;
@@ -448,12 +456,13 @@ function render(){
   else if(!newsVisit){newsVisit=true;Promise.resolve().then(()=>checkNewReleases());}
 }
 function openModal(content,player=false) {
+  clearTimeout(importCloseTimer);modalVersion++;modal.classList.remove('import-dialog');
   activeImportId=null;
   modal.classList.toggle('player-dialog',player);
   modalContent.innerHTML = content;
   if(!modal.open)modal.showModal();
 }
-function closeModal() { clearChannelSearch();cancelRemoval();if(activeImportId){const progress=youtubeImports.get(activeImportId);if(progress)progress.stop=true;}activeImportId=null;modal.close(); modalContent.innerHTML=''; }
+function closeModal() { clearTimeout(importCloseTimer);modalVersion++;modal.classList.remove('import-dialog');clearChannelSearch();cancelRemoval();if(activeImportId){const progress=youtubeImports.get(activeImportId);if(progress)progress.stop=true;}activeImportId=null;modal.close(); modalContent.innerHTML=''; }
 function modalHeading(title) { return `<div class="modal-head"><h2 id="modalTitle">${title}</h2><button class="icon-button" data-close aria-label="Fermer">${icon('close')}</button></div>`; }
 let channelMatches=[],selectedChannel=null,channelSearchTimer,channelSearchVersion=0;
 function clearChannelSearch(){
@@ -567,11 +576,11 @@ document.addEventListener('click',async event=>{
   if(!canEdit())return;
   if(data.action==='check-releases')return checkNewReleases();
   if(data.action==='stop-scan'){const progress=youtubeImports.get(activeImportId);if(progress)progress.stop=true;return;}
-  if(data.importWatched){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing)return;if(progress.watched.has(data.importWatched))progress.watched.delete(data.importWatched);else progress.watched.add(data.importWatched);renderImportPreview(activeImportId);return;}
+  if(data.importWatched){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;if(progress.watched.has(data.importWatched))progress.watched.delete(data.importWatched);else progress.watched.add(data.importWatched);renderImportPreview(activeImportId);return;}
   if(data.removeVideo)return requestRemoval(data.removeVideo);
   if(data.action==='confirm-youtube-import')return confirmYoutubeImport();
   if(['import-select-all','import-select-none'].includes(data.action)){
-    const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing)return;
+    const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;
     progress.selected=data.action==='import-select-all'?new Set(progress.candidates.filter(episode=>canImportVideo(episode.id)).map(episode=>episode.id)):new Set();
     renderImportPreview(activeImportId);return;
   }
@@ -628,8 +637,8 @@ document.addEventListener('keydown',event=>{
 });
 document.addEventListener('change',event=>{
   if(event.target.closest?.('#showForm'))updateRulePreview();
-  if(event.target.dataset&&'importWatchedAll' in event.target.dataset){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing)return;progress.defaultWatched=event.target.checked;progress.watched=event.target.checked?new Set(progress.candidates.map(episode=>episode.id)):new Set();renderImportPreview(activeImportId);return;}
-  if(event.target.dataset?.importVideo){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing)return;const id=event.target.dataset.importVideo;if(event.target.checked&&canImportVideo(id))progress.selected.add(id);else progress.selected.delete(id);renderImportPreview(activeImportId);return;}
+  if(event.target.dataset&&'importWatchedAll' in event.target.dataset){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;progress.defaultWatched=event.target.checked;progress.watched=event.target.checked?new Set(progress.candidates.map(episode=>episode.id)):new Set();renderImportPreview(activeImportId);return;}
+  if(event.target.dataset?.importVideo){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;const id=event.target.dataset.importVideo;if(event.target.checked&&canImportVideo(id))progress.selected.add(id);else progress.selected.delete(id);renderImportPreview(activeImportId);return;}
   if(event.target.id==='showFilter'){filter.show=event.target.value;updateResults();}
   if(event.target.id==='sort'){filter.sort=event.target.value;updateResults();}
 });
@@ -697,7 +706,7 @@ document.addEventListener('submit',async event=>{
 });
 removalModal.addEventListener('cancel',()=>{pendingRemoval=null;});
 removalModal.addEventListener('close',()=>{if(!removalModal.open)pendingRemoval=null;});
-modal.addEventListener('close',()=>{if(!modal.open){clearChannelSearch();activeImportId=null;modalContent.innerHTML='';}});
+modal.addEventListener('close',()=>{if(!modal.open){clearTimeout(importCloseTimer);modalVersion++;modal.classList.remove('import-dialog');clearChannelSearch();activeImportId=null;modalContent.innerHTML='';}});
 modal.addEventListener('click',event=>{if(event.target===modal){const box=modal.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeModal();}});
 window.addEventListener('hashchange',()=>{render();window.scrollTo({top:0,behavior:'instant'});});
 function armLoadingTimeout() {
