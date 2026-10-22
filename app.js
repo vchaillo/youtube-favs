@@ -63,11 +63,23 @@ function applyYoutubeMetadata(){
   state.episodes=state.episodes.map(episode=>({...episode,...(youtubeMetadata.get(episode.id)||{}),showId:episode.showId}));
 }
 let activeImportId=null,importCloseTimer,modalVersion=0;
-const visibleEpisodes=()=>state.episodes.filter(episode=>!episode.hidden);
+let showShortVideos=false;
+const isShortVideo=episode=>globalThis.YouTubeFavsLibrary.isShortVideo(episode);
+const shortVideosKey=()=>`youtube-favs:short-videos:${cloudStatus.user?.uid||'anonymous'}`;
+function loadShortVideosPreference(){
+  try{showShortVideos=localStorage.getItem(shortVideosKey())==='true';}catch{showShortVideos=false;}
+}
+function setShortVideosPreference(value){
+  showShortVideos=value;
+  try{localStorage.setItem(shortVideosKey(),String(value));}catch{}
+  render();toast(value?'Shorts et vidéos courtes affichés.':'Shorts et vidéos courtes masqués.');
+}
+const visibleEpisodes=()=>state.episodes.filter(episode=>!episode.hidden&&(showShortVideos||!isShortVideo(episode)));
+const importCandidates=progress=>progress.candidates.filter(episode=>progress.includeShorts||!isShortVideo(episode));
 const canImportVideo=id=>!state.episodes.some(episode=>episode.id===id&&!episode.hidden);
 function youtubePanel(show){
   const progress=youtubeImports.get(show.id)||{};
-  return `<section class="panel youtube-panel" aria-label="Import YouTube"><div><h2>Importer des vidéos</h2><p role="status" aria-live="polite">${escapeHtml(progress.message||'Recherchez les épisodes de cette source, puis choisissez les vidéos à ajouter.')}</p><span class="small muted">Prévisualisation avant import · Archives par pages de 50 publications.</span></div><div class="actions"><button class="primary" data-youtube="${escapeHtml(show.id)}" ${progress.busy?'disabled':''}>Importer depuis YouTube</button>${progress.next?`<button data-youtube="${show.id}" data-continue="true" ${progress.busy?'disabled':''}>Reprendre la recherche</button>`:''}</div></section>`;
+  return `<section class="panel youtube-panel" aria-label="Import YouTube"><div><h2>Importer des vidéos</h2><p role="status" aria-live="polite">${escapeHtml(progress.message||'Recherchez les épisodes de cette source, puis choisissez les vidéos à ajouter.')}</p><span class="small muted">Prévisualisation avant import · Archives par pages de 50 publications.</span></div><div class="actions"><button class="primary" data-youtube="${escapeHtml(show.id)}" ${progress.busy?'disabled':''}>Importer depuis YouTube</button>${progress.next?`<button data-youtube="${show.id}" data-continue="true" ${progress.busy?'disabled':''}>${show.mode==='channel'?'Charger les 50 suivantes':'Reprendre la recherche'}</button>`:''}</div></section>`;
 }
 function renderImportPreview(showId){
   if(activeImportId!==showId)return;
@@ -77,28 +89,29 @@ function renderImportPreview(showId){
   const locked=progress.committing||progress.success;
   const scrollTop=document.querySelector('.import-results')?.scrollTop||0;
   const focusedVideo=document.activeElement?.dataset?.importVideo;
-  const selected=progress.candidates.filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
-  const rows=progress.candidates.map(episode=>{
+  const selected=importCandidates(progress).filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
+  const candidates=importCandidates(progress),excluded=progress.candidates.length-candidates.length;
+  const rows=candidates.map(episode=>{
     const existing=state.episodes.find(item=>item.id===episode.id);
     const imported=existing&&!existing.hidden,hidden=existing?.hidden;
     return `<article class="import-row" data-episode-id="${episode.id}"><label class="import-choice"><input type="checkbox" data-import-video="${episode.id}" ${progress.selected.has(episode.id)&&!imported?'checked':''} ${imported||locked?'disabled':''}><span class="sr-only">Sélectionner ${escapeHtml(episode.title)}</span></label>${imageTag(episode.id)}<div class="import-description"><strong>${escapeHtml(episode.title)}</strong><p class="small">${episodeMetadata(episode,show.channel)}</p><span class="import-badge ${imported?'imported':''}">${imported?`Déjà présente dans ${escapeHtml(showFor(existing.showId)?.name||'votre bibliothèque')}`:hidden?'Retirée de votre bibliothèque · réimportation possible':'Nouvelle vidéo'}</span></div><a class="text-button" href="https://www.youtube.com/watch?v=${episode.id}" target="_blank" rel="noopener noreferrer">Voir ↗</a>${imported?`<button class="icon-button danger" data-remove-video="${episode.id}" aria-label="Supprimer ${escapeHtml(episode.title)} de ma bibliothèque" title="Supprimer de ma bibliothèque" ${locked?'disabled':''}>${icon('trash')}</button>`:`<button class="icon-button ${progress.watched.has(episode.id)?'selected':''}" data-import-watched="${episode.id}" ${locked?'disabled':''} aria-pressed="${progress.watched.has(episode.id)}" aria-label="Importer ${escapeHtml(episode.title)} comme ${progress.watched.has(episode.id)?'non vu':'vu'}" title="${progress.watched.has(episode.id)?'Sera marqué vu':'Sera marqué non vu'}">${icon('check')}</button>`}</article>`;
   }).join('');
-  modalContent.innerHTML=modalHeading(`Importer depuis YouTube · ${escapeHtml(show.name)}`)+`<p class="small import-status" role="status">${escapeHtml(progress.message)}</p><p class="hint import-explanation">Aucune vidéo n’est ajoutée avant votre confirmation. Les vidéos déjà présentes sont indiquées ; celles que vous avez retirées restent décochées.</p><div class="import-toolbar"><span>${progress.candidates.length} vidéos trouvées · <strong>${selected.length} sélectionnées</strong></span><div class="actions"><button data-action="import-select-all" ${locked?'disabled':''}>Tout sélectionner</button><button data-action="import-select-none" ${locked?'disabled':''}>Tout désélectionner</button></div></div><label class="import-watched-all"><input type="checkbox" data-import-watched-all ${progress.defaultWatched?'checked':''} ${locked?'disabled':''}> Marquer les vidéos sélectionnées comme vues</label><div class="import-results">${rows||`<p class="empty">${progress.busy?'Recherche des vidéos…':'Aucune vidéo sur les pages analysées.'}</p>`}</div><p class="form-error" role="alert">${escapeHtml(progress.error||'')}</p><div class="import-footer">${progress.busy?'<button data-action="stop-scan">Mettre en pause</button>':''}<button data-close ${progress.committing?'disabled':''}>Fermer</button>${progress.next?`<button data-youtube="${escapeHtml(showId)}" data-continue="true" ${progress.busy||locked?'disabled':''}>Continuer la recherche</button>`:''}<button class="primary ${progress.success?'import-success':''}" data-action="confirm-youtube-import" ${!selected.length||progress.busy||locked?'disabled':''}>${progress.success?`${icon('check')} <span role="status">Importation réussie</span>`:progress.committing?'Import en cours…':`Importer la sélection (${selected.length})`}</button></div>`;
+  modalContent.innerHTML=modalHeading(`Importer depuis YouTube · ${escapeHtml(show.name)}`)+`<p class="small import-status" role="status">${escapeHtml(progress.message)}</p><p class="hint import-explanation">Aucune vidéo n’est ajoutée avant votre confirmation. Les vidéos déjà présentes sont indiquées ; celles que vous avez retirées restent décochées.</p><div class="import-toolbar"><span>${candidates.length} vidéos affichées${excluded?` · ${excluded} formats courts exclus`:''} · <strong>${selected.length} sélectionnées</strong></span><div class="actions"><button data-action="import-select-all" ${locked?'disabled':''}>Tout sélectionner</button><button data-action="import-select-none" ${locked?'disabled':''}>Tout désélectionner</button></div></div><label class="import-shorts"><input type="checkbox" data-import-shorts ${progress.includeShorts?'checked':''} ${locked?'disabled':''}> Inclure les Shorts et vidéos courtes (≤ 3 min)<span class="hint">Filtre par durée : certaines vidéos classiques courtes sont aussi exclues.${!showShortVideos&&progress.includeShorts?' Le profil les masque actuellement dans la bibliothèque.':''}</span></label><label class="import-watched-all"><input type="checkbox" data-import-watched-all ${progress.defaultWatched?'checked':''} ${locked?'disabled':''}> Marquer les vidéos sélectionnées comme vues</label><div class="import-results">${rows||`<p class="empty">${progress.busy?'Recherche des vidéos…':'Aucune vidéo sur les pages analysées.'}</p>`}</div><p class="form-error" role="alert">${escapeHtml(progress.error||'')}</p><div class="import-footer">${progress.busy?'<button data-action="stop-scan">Mettre en pause</button>':''}<button data-close ${progress.committing?'disabled':''}>Fermer</button>${progress.next?`<button data-youtube="${escapeHtml(showId)}" data-continue="true" ${progress.busy||locked?'disabled':''}>${show.mode==='channel'?'Charger les 50 suivantes':'Continuer la recherche'}</button>${show.mode==='channel'?`<button data-youtube="${escapeHtml(showId)}" data-continue="true" data-scan-all="true" ${progress.busy||locked?'disabled':''}>Parcourir tout le reste</button>`:''}`:''}<button class="primary ${progress.success?'import-success':''}" data-action="confirm-youtube-import" ${!selected.length||progress.busy||locked?'disabled':''}>${progress.success?`${icon('check')} <span role="status">Importation réussie</span>`:progress.committing?'Import en cours…':`Importer la sélection (${selected.length})`}</button></div>`;
   const results=document.querySelector('.import-results');if(results)results.scrollTop=scrollTop;
   if(focusedVideo)document.querySelector(`[data-import-video="${focusedVideo}"]`)?.focus?.({preventScroll:true});
 }
-async function refreshYoutube(showId,continuing=false){
+async function refreshYoutube(showId,continuing=false,allPages=false){
   const show=showFor(showId),previous=youtubeImports.get(showId);
   if(!canEdit()||!show||previous?.busy||previous?.committing)return;
   const generation=youtubeGeneration,rule=JSON.stringify([show.mode,show.source,show.keywords]);
-  const progress=continuing&&previous?previous:{next:null,scanned:0,candidates:[],selected:new Set(),watched:new Set(),defaultWatched:false};
+  const progress=continuing&&previous?previous:{next:null,scanned:0,candidates:[],selected:new Set(),watched:new Set(),defaultWatched:false,includeShorts:show.includeShorts===true};
   progress.busy=true;progress.stop=false;progress.success=false;progress.error='';progress.message='Recherche des vidéos sur YouTube…';
   youtubeImports.set(showId,progress);
   if(activeImportId!==showId){openModal('');activeImportId=showId;}
   renderImportPreview(showId);render();
   try{
     const summary=await globalThis.YouTubeFavsLibrary.scan({
-      mode:show.mode,pageToken:progress.next||'',singlePage:show.mode!=='keywords',
+      mode:show.mode,pageToken:progress.next||'',singlePage:show.mode==='channel'?!allPages:show.mode!=='keywords',
       shouldStop:()=>generation!==youtubeGeneration||!canEdit()||progress.stop||!showFor(showId),
       request:pageToken=>globalThis.youtubeFavsCloud.youtube({action:'catalog',mode:show.mode,source:show.source,keywords:show.keywords,pageToken}),
       onPage(result,page){
@@ -108,11 +121,11 @@ async function refreshYoutube(showId,continuing=false){
         for(const episode of result.episodes){
           if(progress.candidates.some(candidate=>candidate.id===episode.id))continue;
           progress.candidates.push(episode);
-          if(!state.episodes.some(existing=>existing.id===episode.id))progress.selected.add(episode.id);
+          if((progress.includeShorts||!isShortVideo(episode))&&!state.episodes.some(existing=>existing.id===episode.id))progress.selected.add(episode.id);
           if(progress.defaultWatched)progress.watched.add(episode.id);
         }
         progress.scanned+=result.scanned||0;progress.next=page.next;
-        progress.message=`${progress.scanned} publications analysées · ${progress.candidates.length} vidéos trouvées · ${page.emptyPages}/5 pages consécutives sans correspondance.`;
+        progress.message=`${progress.scanned} publications analysées · ${progress.candidates.length} vidéos trouvées${show.mode==='keywords'?` · ${page.emptyPages}/5 pages consécutives sans correspondance`:''}.`;
         render();renderImportPreview(showId);
       },
     });
@@ -127,7 +140,7 @@ async function refreshYoutube(showId,continuing=false){
 async function confirmYoutubeImport(){
   const showId=activeImportId,progress=youtubeImports.get(showId);
   if(!canEdit()||!progress||progress.busy||progress.committing||progress.success)return;
-  const selected=progress.candidates.filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
+  const selected=importCandidates(progress).filter(episode=>progress.selected.has(episode.id)&&canImportVideo(episode.id));
   if(!selected.length)return;
   const existingPayload=privateModel.pack(state,catalogue);
   const extra=selected.filter(episode=>!state.episodes.some(existing=>existing.id===episode.id)).length;
@@ -142,7 +155,7 @@ async function confirmYoutubeImport(){
     if(progress.watched.has(episode.id)){if(!state.watched.includes(episode.id))state.watched.push(episode.id);}else state.watched=state.watched.filter(id=>id!==episode.id);
     progress.selected.delete(episode.id);
   }
-  const show=showFor(showId);if(show){show.cover=show.cover||selected[0]?.id||'';show.customRule=true;show.releaseAfter=new Date().toISOString();adoptSource(show,{channelId:progress.channelId});}
+  const show=showFor(showId);if(show){show.cover=show.cover||selected[0]?.id||'';show.includeShorts=progress.includeShorts===true;show.customRule=true;show.releaseAfter=new Date().toISOString();adoptSource(show,{channelId:progress.channelId});}
   applyYoutubeMetadata();
   const saved=await save();
   if(generation!==youtubeGeneration)return;
@@ -163,7 +176,7 @@ function cancelRemoval(){
 }
 function requestRemoval(id){
   if(!canEdit())return;
-  const episode=visibleEpisodes().find(item=>item.id===id);
+  const episode=state.episodes.find(item=>item.id===id&&!item.hidden);
   if(!episode)return;
   pendingRemoval={id,type:'episode',generation:youtubeGeneration};
   document.querySelector('#removalDescription').textContent='Êtes-vous sûr de vouloir supprimer cette vidéo de votre bibliothèque ? Elle ne sera plus affichée ni ajoutée automatiquement aux nouvelles sorties. Vous pourrez la réimporter manuellement.';
@@ -270,7 +283,7 @@ async function checkNewReleases(){
           lastResult=result;
           for(const episode of result.episodes){
             const published=Date.parse(episode.publishedAt);
-            if(Number.isFinite(published)&&published>boundary&&published<=Date.now()&&!state.episodes.some(existing=>existing.id===episode.id))candidates.set(episode.id,episode);
+            if((snapshot.includeShorts===true||!isShortVideo(episode))&&Number.isFinite(published)&&published>boundary&&published<=Date.now()&&!state.episodes.some(existing=>existing.id===episode.id))candidates.set(episode.id,episode);
           }
           if(generation===youtubeGeneration){newsState.message=`${snapshot.name} · ${progress.scanned} publications analysées`;render();}
         },
@@ -434,7 +447,7 @@ function watchPage(){
 function settingsPage() {
   const colors=['#f15a61','#e7bc75','#80bfa3','#83aaff','#ba9af1'];
   const user=cloudStatus.user;
-  return heading('Votre espace','Mon profil','Vos émissions et vos préférences vous accompagnent sur tous vos appareils.') + `<section class="panel"><div class="profile-identity">${avatar(user,true)}<div><h2>${escapeHtml(user.displayName||'Mon compte')}</h2><p>${escapeHtml(user.email)}</p><span class="small muted">Connexion Google · ${cloudStatus.sync==='saving'?'Enregistrement en cours':'Compte synchronisé'}</span></div><button data-action="sign-out">Se déconnecter</button></div><div class="settings-row"><div><strong>Couleur d’accentuation</strong><p>Le rouge par défaut, ou une autre ambiance.</p></div><div class="swatches">${colors.map(c=>`<button data-accent="${c}" style="--swatch:${c}" class="${state.accent===c?'active':''}" aria-label="Accent ${c}" aria-pressed="${state.accent===c}"></button>`).join('')}</div></div><div class="settings-row"><div><strong>Apparence</strong><p>Choisissez votre thème.</p></div><button data-action="theme">Passer au thème ${state.theme==='dark'?'clair':'sombre'}</button></div></section><section class="panel"><h2>Connexion YouTube</h2><p>Importez les vidéos d’une émission depuis sa fiche, avec prévisualisation et sélection avant ajout. Les archives se parcourent par pages de 50. Aucun accès à vos abonnements ou vidéos privés n’est demandé.</p><p class="small" role="status">${escapeHtml(youtubeMessage||'Les demandes passent par votre Worker Cloudflare.')}</p><form id="workerForm" class="form-grid"><label>URL du Worker Cloudflare<input name="origin" type="url" required value="${escapeHtml(globalThis.youtubeFavsCloud?.workerOrigin?.()||globalThis.YouTubeFavsApi?.DEFAULT_ORIGIN||'')}" placeholder="https://youtube-favs.votre-compte.workers.dev"></label><p class="hint">Renseignez uniquement l’URL publique. La clé YouTube se configure dans Cloudflare.</p><p id="workerStatus" class="small" role="status" aria-live="polite">${escapeHtml(workerMessage)}</p><div class="actions"><button class="primary">Tester et enregistrer</button></div></form><div class="actions"><button data-action="test-youtube">Tester l’accès à YouTube</button><button data-action="retry-youtube">Recharger les titres YouTube</button><a class="link-button" href="https://github.com/vchaillo/youtube-favs/blob/main/YOUTUBE_SETUP.md" target="_blank" rel="noopener noreferrer">Guide de configuration ↗</a></div></section><section class="panel"><h2>Votre bibliothèque</h2><div class="settings-row"><div><strong>Vos données personnelles</strong><p>${state.shows.length} émissions · ${visibleEpisodes().length} épisodes · ${state.watched.length} épisodes vus. Les ajouts et règles personnalisées restent propres à votre compte.</p></div></div>${legacyState()?'<div class="settings-row"><div><strong>Ancienne démo détectée</strong><p>Vous pouvez importer les choix de ce navigateur dans ce compte Google. Rien n’est importé automatiquement.</p></div><button data-action="import-legacy">Importer l’ancienne démo</button></div>':''}<div class="settings-row"><div><strong>Réinitialiser ma bibliothèque</strong><p>Retire les émissions, épisodes et états de visionnage de ce compte.</p></div><button class="danger" data-action="reset">Réinitialiser</button></div></section>`;
+  return heading('Votre espace','Mon profil','Vos émissions et vos préférences vous accompagnent sur tous vos appareils.') + `<section class="panel"><div class="profile-identity">${avatar(user,true)}<div><h2>${escapeHtml(user.displayName||'Mon compte')}</h2><p>${escapeHtml(user.email)}</p><span class="small muted">Connexion Google · ${cloudStatus.sync==='saving'?'Enregistrement en cours':'Compte synchronisé'}</span></div><button data-action="sign-out">Se déconnecter</button></div><div class="settings-row"><div><strong>Couleur d’accentuation</strong><p>Le rouge par défaut, ou une autre ambiance.</p></div><div class="swatches">${colors.map(c=>`<button data-accent="${c}" style="--swatch:${c}" class="${state.accent===c?'active':''}" aria-label="Accent ${c}" aria-pressed="${state.accent===c}"></button>`).join('')}</div></div><div class="settings-row"><div><strong>Shorts et vidéos courtes</strong><p>Afficher les vidéos de trois minutes ou moins dans la bibliothèque et À voir. La durée ne permet pas de distinguer tous les Shorts des vidéos classiques.</p><p class="hint">Réglage d’affichage enregistré pour ce compte sur ce navigateur. Les vidéos masquées restent dans votre bibliothèque.</p></div><label class="shorts-profile"><input type="checkbox" data-show-shorts ${showShortVideos?'checked':''}> Afficher les formats courts</label></div><div class="settings-row"><div><strong>Apparence</strong><p>Choisissez votre thème.</p></div><button data-action="theme">Passer au thème ${state.theme==='dark'?'clair':'sombre'}</button></div></section><section class="panel"><h2>Connexion YouTube</h2><p>Importez les vidéos d’une émission depuis sa fiche, avec prévisualisation et sélection avant ajout. Les archives se parcourent par pages de 50. Aucun accès à vos abonnements ou vidéos privés n’est demandé.</p><p class="small" role="status">${escapeHtml(youtubeMessage||'Les demandes passent par votre Worker Cloudflare.')}</p><form id="workerForm" class="form-grid"><label>URL du Worker Cloudflare<input name="origin" type="url" required value="${escapeHtml(globalThis.youtubeFavsCloud?.workerOrigin?.()||globalThis.YouTubeFavsApi?.DEFAULT_ORIGIN||'')}" placeholder="https://youtube-favs.votre-compte.workers.dev"></label><p class="hint">Renseignez uniquement l’URL publique. La clé YouTube se configure dans Cloudflare.</p><p id="workerStatus" class="small" role="status" aria-live="polite">${escapeHtml(workerMessage)}</p><div class="actions"><button class="primary">Tester et enregistrer</button></div></form><div class="actions"><button data-action="test-youtube">Tester l’accès à YouTube</button><button data-action="retry-youtube">Recharger les titres YouTube</button><a class="link-button" href="https://github.com/vchaillo/youtube-favs/blob/main/YOUTUBE_SETUP.md" target="_blank" rel="noopener noreferrer">Guide de configuration ↗</a></div></section><section class="panel"><h2>Votre bibliothèque</h2><div class="settings-row"><div><strong>Vos données personnelles</strong><p>${state.shows.length} émissions · ${visibleEpisodes().length} épisodes · ${state.watched.length} épisodes vus. Les ajouts et règles personnalisées restent propres à votre compte.</p></div></div>${legacyState()?'<div class="settings-row"><div><strong>Ancienne démo détectée</strong><p>Vous pouvez importer les choix de ce navigateur dans ce compte Google. Rien n’est importé automatiquement.</p></div><button data-action="import-legacy">Importer l’ancienne démo</button></div>':''}<div class="settings-row"><div><strong>Réinitialiser ma bibliothèque</strong><p>Retire les émissions, épisodes et états de visionnage de ce compte.</p></div><button class="danger" data-action="reset">Réinitialiser</button></div></section>`;
 }
 function aboutPage(){
   return heading('youtube-favs','Votre bibliothèque YouTube','Chaînes, émissions et épisodes réunis dans votre compte.')+`<section class="panel"><h2>Votre bibliothèque</h2><p>Importez une chaîne, une playlist ou une émission recherchée par son nom. Choisissez les vidéos et leur statut vu ou non vu avant de confirmer. Toutes les émissions importées sont suivies automatiquement.</p><h2>À voir</h2><p>À chaque ouverture de cet onglet, les sources sont interrogées pour rechercher des publications plus récentes que votre import. Les nouvelles sorties apparaissent séparément des autres épisodes non vus. Les vidéos retirées ne sont pas réimportées automatiquement.</p><h2>Recherche d’une émission</h2><p>Les pages de 50 publications sont parcourues automatiquement. La recherche s’arrête après cinq pages consécutives sans correspondance ; vous pouvez continuer manuellement. Les appels sont espacés pour respecter les limites du Worker.</p><h2>Lecture YouTube</h2><p>Ouvrir un épisode charge immédiatement le lecteur YouTube. Certaines restrictions d’âge, de pays ou d’intégration peuvent empêcher la lecture ici ; le lien YouTube reste disponible. Le statut vu se gère avec l’icône de validation.</p></section>`;
@@ -581,10 +594,10 @@ document.addEventListener('click',async event=>{
   if(data.action==='confirm-youtube-import')return confirmYoutubeImport();
   if(['import-select-all','import-select-none'].includes(data.action)){
     const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;
-    progress.selected=data.action==='import-select-all'?new Set(progress.candidates.filter(episode=>canImportVideo(episode.id)).map(episode=>episode.id)):new Set();
+    progress.selected=data.action==='import-select-all'?new Set(importCandidates(progress).filter(episode=>canImportVideo(episode.id)).map(episode=>episode.id)):new Set();
     renderImportPreview(activeImportId);return;
   }
-  if(data.youtube)return refreshYoutube(data.youtube,data.continue==='true');
+  if(data.youtube)return refreshYoutube(data.youtube,data.continue==='true',data.scanAll==='true');
   if(data.action==='test-youtube'){const generation=youtubeGeneration;button.disabled=true;youtubeMessage='Vérification de l’accès à YouTube…';render();try{await globalThis.youtubeFavsCloud.youtube({action:'videos',ids:[seedEpisodes[0].id]});if(generation===youtubeGeneration)youtubeMessage='Connexion à YouTube confirmée. La clé autorise la lecture des vidéos publiques.';}catch(error){if(generation===youtubeGeneration)youtubeMessage=error.message;}finally{if(generation===youtubeGeneration)render();}return;}
   if(data.action==='retry-youtube'){youtubeRequested.clear();youtubeMessage='';return reloadYoutubeMetadata();}
   if(data.action==='import-legacy')return openModal(modalHeading('Importer l’ancienne démo ?')+`<p>Les choix conservés sur ce navigateur ne sont associés à aucun compte. Ils seront ajoutés au compte <strong>${escapeHtml(cloudStatus.user.email)}</strong> : émissions, épisodes vus et ajouts personnels. Ils ne remplaceront pas les autres choix déjà enregistrés dans le cloud.</p><div class="form-footer"><button data-close>Annuler</button><button class="primary" data-action="confirm-import">Importer dans ce compte</button></div>`);
@@ -636,6 +649,16 @@ document.addEventListener('keydown',event=>{
   }
 });
 document.addEventListener('change',event=>{
+  if(event.target.dataset&&'showShorts' in event.target.dataset){if(canEdit())setShortVideosPreference(event.target.checked);return;}
+  if(event.target.dataset&&'importShorts' in event.target.dataset){
+    const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;
+    progress.includeShorts=event.target.checked;
+    for(const episode of progress.candidates.filter(isShortVideo)){
+      if(!progress.includeShorts)progress.selected.delete(episode.id);
+      else if(canImportVideo(episode.id)){progress.selected.add(episode.id);if(progress.defaultWatched)progress.watched.add(episode.id);}
+    }
+    renderImportPreview(activeImportId);return;
+  }
   if(event.target.closest?.('#showForm'))updateRulePreview();
   if(event.target.dataset&&'importWatchedAll' in event.target.dataset){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;progress.defaultWatched=event.target.checked;progress.watched=event.target.checked?new Set(progress.candidates.map(episode=>episode.id)):new Set();renderImportPreview(activeImportId);return;}
   if(event.target.dataset?.importVideo){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;const id=event.target.dataset.importVideo;if(event.target.checked&&canImportVideo(id))progress.selected.add(id);else progress.selected.delete(id);renderImportPreview(activeImportId);return;}
@@ -724,7 +747,7 @@ window.addEventListener('youtube-favs:auth',event=>{
   state=initialState();lastSaved=privateModel.empty();
   cloudStatus={phase:event.detail.status,user:event.detail.user,message:event.detail.message||'',sync:'ready'};
   filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute='';
-  applyPreferences();render();armLoadingTimeout();
+  loadShortVideosPreference();applyPreferences();render();armLoadingTimeout();
 });
 window.addEventListener('youtube-favs:data',event=>{
   if(event.detail.uid!==cloudStatus.user?.uid)return;

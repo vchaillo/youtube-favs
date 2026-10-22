@@ -1,6 +1,15 @@
 'use strict';
 // Shared page traversal for archive previews and new-release checks.
 globalThis.YouTubeFavsLibrary={
+  // Public YouTube metadata has no Shorts flag. This is an explicit duration filter.
+  isShortVideo(episode){
+    const label=String(episode.durationLabel||'');
+    if(!/^\d+:\d{2}(?::\d{2})?$/.test(label))return false;
+    const parts=label.split(':').map(Number);
+    if(parts.slice(1).some(value=>value>=60))return false;
+    const seconds=parts.reduce((total,value)=>total*60+value,0);
+    return seconds>0&&seconds<=180;
+  },
   async scan({request,mode,pageToken='',onPage=()=>{},shouldStop=()=>false,stopAtDate=null,singlePage=false,emptyPageLimit=5}){
     let next=pageToken,emptyPages=0,pages=0,scanned=0,reason='end';
     const tokens=new Set();

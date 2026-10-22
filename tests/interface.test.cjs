@@ -179,3 +179,55 @@ test('failed imports never display success or schedule an automatic close',async
   assert.equal([...app.timers.values()].some(fn=>fn.delay===1200),false);
   assert.equal(app.run('cloudStatus.phase'),'error');
 });
+
+test('whole-channel imports load one page by default, resume with the next 50 and scan all only on request',async()=>{
+  const app=boot({shows:[show({mode:'channel',keywords:''})]},'#/show/program');
+  app.run("globalThis.catalogCalls=[];globalThis.youtubeFavsCloud.youtube=async input=>{catalogCalls.push(input);const n=catalogCalls.length;return {episodes:[{id:'A'+String(n).padStart(10,'0'),title:'Episode '+n,durationLabel:'10:00'}],scanned:50,nextPageToken:n<5?'PAGE'+n:null};}");
+  app.click('[data-youtube="program"]');await app.settle();
+  assert.equal(app.run('catalogCalls.length'),1);assert.equal(app.writes.length,0);
+  assert.match(app.document.querySelector('[data-continue]').textContent,/50 suivantes/);
+  app.click('[data-continue]:not([data-scan-all])');await app.settle();
+  assert.equal(app.run('catalogCalls.length'),2);assert.equal(app.run('catalogCalls[1].pageToken'),'PAGE1');
+  app.click('[data-scan-all]');await app.settle();
+  assert.equal(app.run('catalogCalls.length'),5);assert.equal(app.writes.length,0);
+});
+test('the import filter reuses loaded pages and prevents excluded short videos from being saved',async()=>{
+  const app=boot({shows:[show({mode:'channel'})]},'#/show/program');
+  app.run("globalThis.catalogCalls=0;globalThis.youtubeFavsCloud.youtube=async()=>{catalogCalls++;return {episodes:[{id:'AAAAAAAAAAA',title:'Short video',durationLabel:'0:35'},{id:'BBBBBBBBBBB',title:'Three minutes',durationLabel:'3:00'},{id:'CCCCCCCCCCC',title:'Long video',durationLabel:'5:30'},{id:'DDDDDDDDDDD',title:'Unknown duration'}],scanned:4,nextPageToken:null};}");
+  app.click('[data-youtube="program"]');await app.settle();
+  assert.equal(app.document.querySelectorAll('.import-row').length,2);
+  const checkbox=app.document.querySelector('[data-import-shorts]');checkbox.checked=true;checkbox.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  assert.equal(app.document.querySelectorAll('.import-row').length,4);
+  const off=app.document.querySelector('[data-import-shorts]');off.checked=false;off.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  assert.equal(app.run('catalogCalls'),1);
+  app.click('[data-action="confirm-youtube-import"]');await app.settle();
+  assert.deepEqual([...app.writes.at(-1).next.episodes.map(episode=>episode.id)],['CCCCCCCCCCC','DDDDDDDDDDD']);
+  assert.equal(app.writes.at(-1).next.shows[0].includeShorts,false);
+});
+test('profile filtering is reversible and does not delete any imported short videos',()=>{
+  const app=boot({shows:[show()],episodes:[video(),video('BBBBBBBBBBB')]});
+  app.run("youtubeMetadata.set('AAAAAAAAAAA',{id:'AAAAAAAAAAA',durationLabel:'0:30'});youtubeMetadata.set('BBBBBBBBBBB',{id:'BBBBBBBBBBB',durationLabel:'8:00'});applyYoutubeMetadata();render()");
+  assert.equal(app.document.querySelectorAll('.episode').length,1);
+  app.run("location.hash='#/settings';render()");
+  const checkbox=app.document.querySelector('[data-show-shorts]');checkbox.checked=true;checkbox.dispatchEvent(new app.window.Event('change',{bubbles:true}));
+  app.run("location.hash='#/episodes';render()");assert.equal(app.document.querySelectorAll('.episode').length,2);
+  assert.equal(app.run('state.episodes.length'),2);assert.equal(app.writes.length,0);
+  app.run('setShortVideosPreference(false)');assert.equal(app.document.querySelectorAll('.episode').length,1);
+});
+test('new-release checks honor the source inclusion preference for short videos',async()=>{
+  for(const includeShorts of [false,true]){
+    const app=boot({shows:[show({mode:'channel',includeShorts,releaseAfter:'2026-01-01T00:00:00Z'})]});
+    app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'Short release',durationLabel:'0:20',publishedAt:new Date(Date.now()-10000).toISOString()}],scanned:1,nextPageToken:null})");
+    await app.run('checkNewReleases()');
+    assert.equal(app.run('state.episodes.length'),includeShorts?1:0);
+  }
+});
+
+test('the browser display preference is restored per account without changing cloud data',()=>{
+  const app=boot();
+  app.run("globalThis.preferenceStore=new Map();globalThis.localStorage={getItem:key=>preferenceStore.get(key)||null,setItem:(key,value)=>preferenceStore.set(key,value)};setShortVideosPreference(true)");
+  assert.equal(app.run("preferenceStore.get('youtube-favs:short-videos:alice')"),'true');
+  app.emit('auth',{status:'loading',user:{uid:'bob'}});assert.equal(app.run('showShortVideos'),false);
+  app.emit('auth',{status:'loading',user:{uid:'alice'}});assert.equal(app.run('showShortVideos'),true);
+  assert.equal(app.writes.length,0);
+});

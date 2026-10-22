@@ -29,3 +29,9 @@ test('cancellation ignores an in-flight response and repeated page tokens fail e
   await scan({mode:'keywords',shouldStop:()=>stopped,request:async()=>{stopped=true;return {episodes:[],nextPageToken:'NEXT'};},onPage:()=>delivered++});assert.equal(delivered,0);
   await assert.rejects(scan({mode:'keywords',request:async()=>({episodes:[],nextPageToken:'SAME'})}),/même page/);
 });
+
+test('short-video filtering uses an explicit three-minute threshold and never guesses missing durations',()=>{
+  const {isShortVideo}=globalThis.YouTubeFavsLibrary;
+  for(const durationLabel of ['0:01','0:59','1:00','2:59','3:00','0:03:00'])assert.equal(isShortVideo({durationLabel}),true,durationLabel);
+  for(const durationLabel of ['3:01','1:00:00','','0:00','unknown','2:90'])assert.equal(isShortVideo({durationLabel}),false,durationLabel);
+});
