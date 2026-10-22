@@ -611,7 +611,7 @@ document.addEventListener('focusin',event=>{
   if(event.target.name==='channel'&&event.target.closest('#showForm')&&(!selectedChannel||selectedChannel.name!==event.target.value))channelSuggestions(localChannels(event.target.value),'Choisissez une chaîne connue ou saisissez un nom pour rechercher.');
 });
 document.addEventListener('keydown',event=>{
-  const form=event.target.closest?.('#showForm');if(!form)return;
+  const form=event.target.closest?.('#showForm');if(!form||!(event.target.name==='channel'||event.target.closest?.('#channelMatches')))return;
   const options=[...form.querySelectorAll('[data-select-channel]')];
   if(event.key==='Escape'&&!document.querySelector('#channelMatches').hidden){event.preventDefault();channelSuggestions([],'');return;}
   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
