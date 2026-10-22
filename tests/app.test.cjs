@@ -21,7 +21,7 @@ function boot({legacy=null,privateData={},authenticated=true}={}) {
     FormData:class{constructor(form){this.values=form.values;}get(key){return this.values?.[key]??'';}},
     youtubeFavsCloud:{save:(previous,next)=>{writes.push({previous:structuredClone(previous),next:structuredClone(next)});return Promise.resolve();},signIn(){},signOut(){},retry(){}}
   });
-  for(const file of ['data/catalog.js','cloud-state.js','library.js','app.js'])vm.runInContext(load(file),context);
+  for(const file of ['data/catalog.js','cloud-state.js','library.js','dom-sync.js','app.js'])vm.runInContext(load(file),context);
   const emit=(name,detail)=>windowListeners[`youtube-favs:${name}`]({detail});
   const run=code=>vm.runInContext(code,context);
   const user={uid:'alice',displayName:'Alice',email:'alice@example.test',photoURL:''};
@@ -62,24 +62,15 @@ test('library navigation groups multiple programmes by channel and exposes their
   app.run("location.hash='#/channel/my%20channel';render()");assert.match(app.nodes.get('#results').innerHTML,/Other show/);
   app.run("location.hash='#/channel-episodes/my%20channel';render()");assert.equal(app.run('filteredEpisodes().length'),2);
 });
-test('new programme validation requires links for channels and playlists but accepts a known channel name for keywords',async()=>{
+test('programme imports use the name as keywords and resolve known channels automatically',async()=>{
   const app=boot({privateData:{shows:[show()]}});
   app.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[],scanned:50,nextPageToken:null})");
-  const form={id:'showForm',dataset:{},values:{name:'Second',channel:'My channel',mode:'channel',source:'',keywords:''}};
+  const form={id:'showForm',dataset:{},values:{name:'Second',channel:'My channel',mode:'playlist',source:''}};
   await app.listeners.submit({preventDefault(){},target:form});assert.equal(app.run('state.shows.length'),1);
-  form.values.mode='playlist';await app.listeners.submit({preventDefault(){},target:form});assert.equal(app.run('state.shows.length'),1);
-  form.values.mode='keywords';form.values.keywords='second';await app.listeners.submit({preventDefault(){},target:form});
+  form.values.mode='keywords';await app.listeners.submit({preventDefault(){},target:form});
   assert.equal(app.run('state.shows.length'),2);assert.match(app.nodes.get('#modalContent').innerHTML,/Importer depuis YouTube/);
   assert.equal(app.writes.at(-1).next.shows[1].source,'https://www.youtube.com/@mychannel');
-});
-test('unknown channel names are searched and require an explicit choice before importing',async()=>{
-  const app=boot();app.run("showForm();globalThis.calls=[];globalThis.youtubeFavsCloud.youtube=async data=>{calls.push(data);return data.action==='channels'?{channels:[{id:'UC1234567890123456789012',name:'Actual channel',url:'https://www.youtube.com/channel/UC1234567890123456789012'}]}:{episodes:[],scanned:0,nextPageToken:null};}");
-  const form=app.element('#showForm');form.values={name:'Show',channel:'A name',mode:'keywords',source:'',keywords:'show'};
-  await app.listeners.submit({preventDefault(){},target:form});
-  assert.equal(app.run('state.shows.length'),0);assert.match(app.nodes.get('#channelMatches').innerHTML,/Actual channel/);
-  form.values.resolvedSource='https://www.youtube.com/channel/UC1234567890123456789012';
-  await app.listeners.submit({preventDefault(){},target:form});
-  assert.equal(app.run('state.shows[0].channel'),'Actual channel');assert.equal(app.run('calls[0].action'),'channels');
+  assert.equal(app.writes.at(-1).next.shows[1].keywords,'Second');
 });
 test('keyword scanning stops after five empty pages and resumes with the next token',async()=>{
   const app=boot({privateData:{shows:[show()]}});

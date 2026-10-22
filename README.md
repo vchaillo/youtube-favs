@@ -6,7 +6,9 @@ A private YouTube programme library hosted on GitHub Pages, with Firebase Google
 
 - New accounts start empty. Imported programmes are automatically followed; there is no separate follow toggle or favorites feature.
 - One library with Channels, Programmes and Episodes views. A channel groups its imported programmes.
-- Import by playlist URL, channel URL, or channel name plus keywords. Imported channel names are suggested; ambiguous name searches require explicit channel selection.
+- Import by playlist URL, full channel, or programme name within a channel. A single channel field suggests known channels and searches YouTube after a 650 ms typing pause. Selecting a result fills its canonical URL. Programme imports use the programme name as their title/description filter.
+- Delete a programme and its imported episodes with a confirmation, including programmes with no episodes. Mark every visible (non-deleted) imported episode of one programme watched in one cloud write, independently of search filters.
+- Keyed DOM updates preserve episode cards and thumbnail elements when watched flags or Firestore snapshots change; the watchlist removes only the watched cards.
 - Keyword archive scans continue automatically through pages of 50 uploads and pause after five consecutive pages without matches. The next page token is retained for manual continuation; scans can also be paused.
 - Preview video selections before import, with global and per-video watched choices. Programme covers use imported video thumbnails.
 - Opening To Watch checks every imported source for new publications. Newly discovered releases and the unseen backlog appear in separate sections. Marking a release watched clears its novelty flag; removed videos are not automatically restored.
