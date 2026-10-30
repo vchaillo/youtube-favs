@@ -30,7 +30,7 @@ function boot(data={},hash='#/episodes'){
     youtubeFavsCloud:{save:async(previous,next)=>{writes.push({previous,next});},youtube:async input=>{requests.push(input);return {episodes:[],channels:[],scanned:0,nextPageToken:null};}},
   });
   const run=code=>vm.runInContext(code,context);
-  for(const file of ['data/catalog.js','cloud-state.js','library.js','dom-sync.js','app.js'])run(source(file));
+  for(const file of ['data/catalog.js','cloud-state.js','library.js','dom-sync.js','refresh.js','app.js'])run(source(file));
   const emit=(type,detail)=>window.dispatchEvent(new window.CustomEvent(`youtube-favs:${type}`,{detail}));
   emit('auth',{status:'loading',user:{uid:'alice',displayName:'Alice'}});
   emit('data',{uid:'alice',data:{...run('privateModel.empty()'),...data}});
@@ -330,4 +330,40 @@ test('removing a selected suggestion clears the search rather than saving it as 
   const input=app.document.querySelector('#categoryEntry');input.value='Scie';input.dispatchEvent(new app.window.Event('input',{bubbles:true}));
   app.click('[data-category-choice="Science"]');assert.equal(input.value,'');
   await app.submit('#appearanceForm');assert.deepEqual([...app.writes.at(-1).next.shows[0].categories],['Culture']);
+});
+
+test('saved watched episodes never reappear on reload, even before the source is scanned',async()=>{
+  const app=boot({shows:[show()],episodes:[video()]});app.click('[data-id="AAAAAAAAAAA"]');await app.settle();
+  const payload=app.writes.at(-1).next,reloaded=boot(payload,'#/watchlist');
+  assert.equal(reloaded.document.querySelectorAll('.episode').length,0);assert.equal(reloaded.run("state.watched.includes('AAAAAAAAAAA')"),true);
+  await reloaded.settle();assert.equal(reloaded.document.querySelectorAll('.episode').length,0);
+  reloaded.run("globalThis.youtubeFavsCloud.youtube=async()=>({episodes:[{id:'AAAAAAAAAAA',title:'An episode',publishedAt:new Date(Date.now()-10000).toISOString()}],scanned:1,nextPageToken:null})");
+  await reloaded.run('checkNewReleases()');assert.equal(reloaded.document.querySelectorAll('.episode').length,0);
+});
+test('an in-flight watched save shields optimistic state and warns only while leaving before acknowledgement',async()=>{
+  const app=boot({shows:[show()],episodes:[video()]},'#/watchlist');await app.settle();
+  app.run('globalThis.youtubeFavsCloud.save=()=>new Promise(resolve=>globalThis.saved=resolve)');
+  app.click('[data-id="AAAAAAAAAAA"]');
+  const old=app.run('privateModel.pack(state,catalogue)');old.watched=[];
+  app.emit('data',{uid:'alice',data:old});assert.equal(app.run("state.watched.includes('AAAAAAAAAAA')"),true);
+  const leaving=new app.window.Event('beforeunload',{cancelable:true});app.window.dispatchEvent(leaving);assert.ok(leaving.defaultPrevented);
+  old.watched=['AAAAAAAAAAA'];app.emit('data',{uid:'alice',data:old});app.run('saved()');await app.settle();
+  const after=new app.window.Event('beforeunload',{cancelable:true});app.window.dispatchEvent(after);assert.equal(after.defaultPrevented,false);
+  assert.equal(app.document.querySelectorAll('.episode').length,0);
+});
+test('the watchlist defers unclassified API videos instead of briefly showing short videos as unseen',()=>{
+  const app=boot({shows:[show()],episodes:[video()]},'#/watchlist');
+  assert.equal(app.document.querySelectorAll('.episode').length,0);
+  assert.match(app.document.querySelector('#results').textContent,/Chargement des épisodes/);
+  app.run("youtubeMetadata.set('AAAAAAAAAAA',{id:'AAAAAAAAAAA',durationLabel:'0:30'});applyYoutubeMetadata();render()");
+  assert.equal(app.document.querySelectorAll('.episode').length,0);
+});
+test('watchlist is the home screen, has no scan-count panel and the player exposes native controls',async()=>{
+  const app=boot({shows:[show()],episodes:[video()]},'');await app.settle();
+  assert.equal(app.run('route().page'),'watchlist');
+  assert.equal(app.document.querySelector('header nav a').getAttribute('href'),'#/watchlist');
+  assert.equal(app.document.querySelector('header .brand').getAttribute('href'),'#/watchlist');
+  assert.equal(app.document.querySelector('#app section.panel'),null);
+  app.run("playEpisode('AAAAAAAAAAA')");
+  const frame=app.document.querySelector('iframe');assert.match(frame.getAttribute('src'),/controls=1/);assert.match(frame.getAttribute('src'),/playsinline=1/);
 });

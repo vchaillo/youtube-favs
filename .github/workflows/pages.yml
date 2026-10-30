@@ -41,6 +41,7 @@ jobs:
         run: |
           node --check app.js
           node --check dom-sync.js
+          node --check refresh.js
           node --check library.js
           node --check cloud-state.js
           node --check firebase-app.mjs
@@ -53,7 +54,7 @@ jobs:
       - name: Prepare static files
         run: |
           mkdir _site
-          cp index.html styles.css app.js dom-sync.js cloud-state.js firebase-app.mjs youtube-api.js library.js favicon.svg .nojekyll _site/
+          cp index.html styles.css app.js dom-sync.js refresh.js cloud-state.js firebase-app.mjs youtube-api.js library.js favicon.svg .nojekyll _site/
           cp -R data _site/data
       - name: Configure Pages
         uses: actions/configure-pages@v5

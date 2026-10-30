@@ -96,3 +96,13 @@ test('category arrays migrate legacy values, trim labels and preserve an explici
   assert.deepEqual(model.categoriesOf({categories:[' Science ','science','Jeux vidéo','Jeux video','',null,12]}),['Science','Jeux vidéo']);
   assert.equal(model.categoriesOf({categories:Array.from({length:30},(_,n)=>`Category ${n}`)}).length,20);
 });
+
+test('rapid watched changes share a transaction and survive a fresh session before any YouTube check',async()=>{
+  let remote=model.empty(),revision=-1,writes=0;
+  const session=model.createSession({async transact(update){writes++;remote=update(remote);return {data:remote,revision:++revision};},onData(){},onStatus(){}});
+  const first={...model.empty(),watched:[videoA]},second={...first,watched:[videoA,videoB]};
+  await Promise.all([session.save(model.empty(),first),session.save(first,second)]);
+  assert.equal(writes,1);session.stop();
+  let restored;const reloaded=model.createSession({transact(){throw Error('No write needed');},onData:data=>{restored=data;},onStatus(){}});
+  reloaded.receive(remote,revision);assert.deepEqual(restored.watched,[videoA,videoB]);reloaded.stop();
+});

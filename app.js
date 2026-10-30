@@ -25,6 +25,7 @@ function initialState() { return privateModel.hydrate(privateModel.empty(),catal
 let state = initialState();
 let cloudStatus = {phase:'loading',user:null,message:'',sync:'ready'};
 let lastSaved = privateModel.empty();
+let pendingSaves=0,pendingCloudData=null,releaseRefresh=null,cloudEpoch=0;
 let youtubeGeneration=0;
 const youtubeMetadata=new Map(),youtubeImports=new Map(),youtubeRequested=new Set();
 let youtubeMessage='';
@@ -48,15 +49,15 @@ function save() {
   const previous=lastSaved;
   const next=privateModel.pack(state,catalogue);
   lastSaved=structuredClone(next);
-  const uid=cloudStatus.user.uid;
+  const uid=cloudStatus.user.uid,ownerEpoch=cloudEpoch;pendingSaves++;
   return globalThis.youtubeFavsCloud.save(previous,next).then(()=>true).catch(error=>{
-    if(error.code!=='session-changed' && cloudStatus.user?.uid===uid && cloudStatus.phase!=='error'){
+    if(ownerEpoch===cloudEpoch&&error.code!=='session-changed' && cloudStatus.user?.uid===uid && cloudStatus.phase!=='error'){
       cloudStatus.phase='error';
       cloudStatus.message='La sauvegarde cloud a échoué. Réessayez pour recharger les dernières données enregistrées.';
       closeModal();render();
     }
     return false;
-  });
+  }).finally(()=>{if(ownerEpoch===cloudEpoch){pendingSaves--;if(!pendingSaves&&pendingCloudData){const detail=pendingCloudData;pendingCloudData=null;receiveCloudData(detail);}}});
 }
 // API metadata stays in this account's tab memory; Firestore stores references only.
 function applyYoutubeMetadata(){
@@ -74,7 +75,8 @@ function setShortVideosPreference(value){
   try{localStorage.setItem(shortVideosKey(),String(value));}catch{}
   render();toast(value?'Shorts et vidéos courtes affichés.':'Shorts et vidéos courtes masqués.');
 }
-const visibleEpisodes=()=>state.episodes.filter(episode=>!episode.hidden&&(showShortVideos||!isShortVideo(episode)));
+const awaitingMetadata=episode=>!showShortVideos&&episode.apiImported&&!youtubeMetadata.has(episode.id)&&!youtubeMessage;
+const visibleEpisodes=()=>state.episodes.filter(episode=>!episode.hidden&&(showShortVideos||!isShortVideo(episode))&&!(watchContext()&&awaitingMetadata(episode)));
 const importCandidates=progress=>progress.candidates.filter(episode=>progress.includeShorts||!isShortVideo(episode));
 const canImportVideo=id=>!state.episodes.some(episode=>episode.id===id&&!episode.hidden);
 function youtubePanel(show){
@@ -264,31 +266,32 @@ function adoptSource(show,result){
     show.channelId=result.channelId;show.channelSource=`https://www.youtube.com/channel/${result.channelId}`;
   }
 }
-async function checkNewReleases(){
+async function checkNewReleases({automatic=false}={}){
   if(!canEdit()||newsState.busy)return;
   const generation=youtubeGeneration;
   newsState={busy:true,message:'Recherche des nouvelles sorties…',errors:[]};render();
-  const programs=state.shows.map(show=>({...show}));let added=0,checked=0;
+  const programs=state.shows.map(show=>({...show}));let added=0,checked=0,units=0,retryAfter=0;
   for(const snapshot of programs){
     if(generation!==youtubeGeneration||!canEdit())return;
     const started=Date.now(),boundary=releaseBoundary(snapshot),candidates=new Map();
-    newsState.message=`Vérification de ${snapshot.name} · ${checked+1}/${programs.length}`;render();
+    newsState.message=`Vérification de ${snapshot.name} · ${checked+1}/${programs.length}`;
     try{
       let lastResult;
-      await globalThis.YouTubeFavsLibrary.scan({
+      const scan=await globalThis.YouTubeFavsLibrary.scan({
         mode:snapshot.mode,stopAtDate:boundary,emptyPageLimit:Infinity,
-        shouldStop:()=>generation!==youtubeGeneration||!canEdit()||!showFor(snapshot.id),
-        request:pageToken=>globalThis.youtubeFavsCloud.youtube({action:'catalog',mode:snapshot.mode,source:snapshot.source,keywords:snapshot.keywords,pageToken,refresh:true}),
+        shouldStop:()=>generation!==youtubeGeneration||!canEdit()||!showFor(snapshot.id)||(automatic&&document.visibilityState==='hidden'),
+        request:pageToken=>{units+=snapshot.mode==='playlist'?2:3;return globalThis.youtubeFavsCloud.youtube({action:'catalog',mode:snapshot.mode,source:snapshot.source,keywords:snapshot.keywords,pageToken,refresh:true});},
         onPage(result,progress){
           lastResult=result;
           for(const episode of result.episodes){
             const published=Date.parse(episode.publishedAt);
             if((snapshot.includeShorts===true||!isShortVideo(episode))&&Number.isFinite(published)&&published>boundary&&published<=Date.now()&&!state.episodes.some(existing=>existing.id===episode.id))candidates.set(episode.id,episode);
           }
-          if(generation===youtubeGeneration){newsState.message=`${snapshot.name} · ${progress.scanned} publications analysées`;render();}
+          if(generation===youtubeGeneration){newsState.message=`${snapshot.name} · ${progress.scanned} publications analysées`;}
         },
       });
       if(generation!==youtubeGeneration||!canEdit())return;
+      if(scan.reason==='paused'){newsState.busy=false;render();return {units};}
       const show=showFor(snapshot.id);
       if(!show||JSON.stringify([show.source,show.mode,show.keywords])!==JSON.stringify([snapshot.source,snapshot.mode,snapshot.keywords]))continue;
       const fresh=[...candidates.values()].filter(episode=>!state.episodes.some(existing=>existing.id===episode.id));
@@ -298,17 +301,19 @@ async function checkNewReleases(){
       if(lastResult)adoptSource(show,lastResult);
       show.releaseAfter=new Date(Math.max(boundary,started-5*60000)).toISOString();show.customRule=true;
       applyYoutubeMetadata();
-      if(!await save())return;
+      if(!await save()){newsState.busy=false;return {units,retryAfter:3600000};}
       added+=fresh.length;checked++;
     }catch(error){
       if(generation!==youtubeGeneration)return;
+      if(error.code==='resource-exhausted'||error.code==='failed-precondition')retryAfter=3600000;
       newsState.errors.push(`${snapshot.name} : ${error.message||'Vérification impossible.'}`);
     }
   }
   if(generation!==youtubeGeneration)return;
   newsState.busy=false;
   newsState.message=programs.length?`${checked}/${programs.length} émissions vérifiées · ${added} nouvelle${added>1?'s':''} vidéo${added>1?'s':''}.`:'Importez une première émission pour retrouver ici ses nouvelles sorties.';
-  render();
+  render();if(!automatic)toast(newsState.errors.length?'Certaines sources n’ont pas pu être vérifiées.':'Vérification terminée.');
+  return {units,retryAfter};
 }
 async function reloadYoutubeMetadata(){
   const generation=youtubeGeneration;
@@ -364,7 +369,7 @@ function route() {
   const [path,query='']=location.hash.replace(/^#\/?/,'').split('?');
   const parts=path.split('/'),params=new URL(`https://youtube-favs.invalid/?${query}`).searchParams;
   let id;try{id=decodeURIComponent(parts[1]||'');}catch{id='';}
-  return {page:['explore','favorites'].includes(parts[0])?'shows':parts[0]||'shows',id,channelId:params.get('channel')||'',showId:params.get('show')||''};
+  return {page:['explore','favorites'].includes(parts[0])?'shows':parts[0]||'watchlist',id,channelId:params.get('channel')||'',showId:params.get('show')||''};
 }
 const watchContext=()=>route().page==='watchlist';
 const browseKind=()=>watchContext()?(['channels','shows','episodes'].includes(route().id)?route().id:'episodes'):route().page;
@@ -484,8 +489,8 @@ function updateResults(){
   node.className=watchContext()&&!shows&&!isChannels?'':className;
   const empty=`<div class="empty"><h2>${state.shows.length?'Aucun résultat pour le moment':'Votre bibliothèque commence ici'}</h2><p>${state.shows.length?'Essayez un autre filtre ou importez des épisodes.':'Importez votre première émission ou une chaîne YouTube.'}</p><button class="primary" data-action="add-show">${icon('plus')} Suivre une émission</button></div>`;
   if(watchContext()&&!shows&&!isChannels){
-    const fresh=records.filter(episode=>episode.newRelease),backlog=records.filter(episode=>!episode.newRelease);
-    syncMarkup(node,`<section class="watch-section" data-key="new-releases"><h2>Nouvelles sorties <span class="count">${fresh.length}</span></h2><div class="${className}">${fresh.map(episodeCard).join('')||'<p class="muted">Aucune nouvelle sortie à regarder pour le moment.</p>'}</div></section><section class="watch-section" data-key="backlog"><h2>Épisodes non vus <span class="count">${backlog.length}</span></h2><div class="${className}">${backlog.map(episodeCard).join('')||'<p class="muted">Tous vos épisodes importés sont vus.</p>'}</div></section>`);
+    const fresh=records.filter(episode=>episode.newRelease),backlog=records.filter(episode=>!episode.newRelease),loading=state.episodes.some(episode=>!episode.hidden&&!state.watched.includes(episode.id)&&awaitingMetadata(episode));
+    syncMarkup(node,`<section class="watch-section" data-key="new-releases"><h2>Nouvelles sorties <span class="count">${fresh.length}</span></h2><div class="${className}">${fresh.map(episodeCard).join('')||'<p class="muted">Aucune nouvelle sortie à regarder pour le moment.</p>'}</div></section><section class="watch-section" data-key="backlog"><h2>Épisodes non vus <span class="count">${backlog.length}</span></h2><div class="${className}">${backlog.map(episodeCard).join('')||`<p class="muted">${loading?'Chargement des épisodes…':'Tous vos épisodes importés sont vus.'}</p>`}</div></section>`);
     if(!state.shows.length)syncMarkup(node,empty);
   }else syncMarkup(node,records.map(isChannels?channelCard:shows?showCard:episodeCard).join('')||empty);
 }
@@ -506,7 +511,7 @@ function detailPage(id){
 function watchPage(){
   const current=route(),scope=current.showId?showFor(current.showId)?.name:current.channelId?channels().find(channel=>channel.id===current.channelId)?.name:'';
   const scopeLabel=scope?`<p class="scope-label">${escapeHtml(scope)} <a class="text-button" href="#/watchlist/${browseKind()}">Retirer ce filtre</a></p>`:'';
-  return heading('Votre prochaine séance','À voir','Les nouvelles sorties et tous les épisodes que vous n’avez pas encore vus.',`<button data-action="check-releases" ${newsState.busy?'disabled':''}>${newsState.busy?'Recherche en cours…':'Vérifier les nouveautés'}</button>`)+`<section class="panel"><p role="status" aria-live="polite">${escapeHtml(newsState.message||'Recherche des nouvelles sorties à l’ouverture de cet onglet.')}</p>${newsState.errors.length?`<details><summary>${newsState.errors.length} source(s) à vérifier</summary><ul>${newsState.errors.map(message=>`<li>${escapeHtml(message)}</li>`).join('')}</ul></details>`:''}</section>`+scopeLabel+libraryTabs()+toolbar(browseKind())+`<span id="resultCount" class="count"></span><div id="results"></div>`;
+  return heading('Votre prochaine séance','À voir','Les nouvelles sorties et tous les épisodes que vous n’avez pas encore vus.',`<button data-action="check-releases" ${newsState.busy?'disabled':''}>${newsState.busy?'Recherche en cours…':'Vérifier les nouveautés'}</button>`)+`${newsState.errors.length?'<p class="form-error" role="status">Certaines sources n’ont pas pu être vérifiées. Vous pouvez réessayer.</p>':''}`+scopeLabel+libraryTabs()+toolbar(browseKind())+`<span id="resultCount" class="count"></span><div id="results"></div>`;
 }
 function settingsPage() {
   const colors=['#f15a61','#e7bc75','#80bfa3','#83aaff','#ba9af1'];
@@ -514,9 +519,23 @@ function settingsPage() {
   return heading('Votre espace','Mon profil','Vos émissions et vos préférences vous accompagnent sur tous vos appareils.') + `<section class="panel"><div class="profile-identity">${avatar(user,true)}<div><h2>${escapeHtml(user.displayName||'Mon compte')}</h2><p>${escapeHtml(user.email)}</p><span class="small muted">Connexion Google · ${cloudStatus.sync==='saving'?'Enregistrement en cours':'Compte synchronisé'}</span></div><button data-action="sign-out">Se déconnecter</button></div><div class="settings-row"><div><strong>Couleur d’accentuation</strong><p>Le rouge par défaut, ou une autre ambiance.</p></div><div class="swatches">${colors.map(c=>`<button data-accent="${c}" style="--swatch:${c}" class="${state.accent===c?'active':''}" aria-label="Accent ${c}" aria-pressed="${state.accent===c}"></button>`).join('')}</div></div><div class="settings-row"><div><strong>Shorts et vidéos courtes</strong><p>Afficher les vidéos de trois minutes ou moins dans la bibliothèque et À voir. La durée ne permet pas de distinguer tous les Shorts des vidéos classiques.</p><p class="hint">Réglage d’affichage enregistré pour ce compte sur ce navigateur. Les vidéos masquées restent dans votre bibliothèque.</p></div><label class="shorts-profile"><input type="checkbox" data-show-shorts ${showShortVideos?'checked':''}> Afficher les formats courts</label></div><div class="settings-row"><div><strong>Apparence</strong><p>Choisissez votre thème.</p></div><button data-action="theme">Passer au thème ${state.theme==='dark'?'clair':'sombre'}</button></div></section><section class="panel"><h2>Connexion YouTube</h2><p>Importez les vidéos d’une émission depuis sa fiche, avec prévisualisation et sélection avant ajout. Les archives se parcourent par pages de 50. Aucun accès à vos abonnements ou vidéos privés n’est demandé.</p><p class="small" role="status">${escapeHtml(youtubeMessage||'Les demandes passent par votre Worker Cloudflare.')}</p><form id="workerForm" class="form-grid"><label>URL du Worker Cloudflare<input name="origin" type="url" required value="${escapeHtml(globalThis.youtubeFavsCloud?.workerOrigin?.()||globalThis.YouTubeFavsApi?.DEFAULT_ORIGIN||'')}" placeholder="https://youtube-favs.votre-compte.workers.dev"></label><p class="hint">Renseignez uniquement l’URL publique. La clé YouTube se configure dans Cloudflare.</p><p id="workerStatus" class="small" role="status" aria-live="polite">${escapeHtml(workerMessage)}</p><div class="actions"><button class="primary">Tester et enregistrer</button></div></form><div class="actions"><button data-action="test-youtube">Tester l’accès à YouTube</button><button data-action="retry-youtube">Recharger les titres YouTube</button><a class="link-button" href="https://github.com/vchaillo/youtube-favs/blob/main/YOUTUBE_SETUP.md" target="_blank" rel="noopener noreferrer">Guide de configuration ↗</a></div></section><section class="panel"><h2>Votre bibliothèque</h2><div class="settings-row"><div><strong>Vos données personnelles</strong><p>${state.shows.length} émissions · ${visibleEpisodes().length} épisodes · ${state.watched.length} épisodes vus. Les ajouts et règles personnalisées restent propres à votre compte.</p></div></div>${legacyState()?'<div class="settings-row"><div><strong>Ancienne démo détectée</strong><p>Vous pouvez importer les choix de ce navigateur dans ce compte Google. Rien n’est importé automatiquement.</p></div><button data-action="import-legacy">Importer l’ancienne démo</button></div>':''}<div class="settings-row"><div><strong>Réinitialiser ma bibliothèque</strong><p>Retire les émissions, épisodes et états de visionnage de ce compte.</p></div><button class="danger" data-action="reset">Réinitialiser</button></div></section>`;
 }
 function aboutPage(){
-  return heading('youtube-favs','Votre bibliothèque YouTube','Chaînes, émissions et épisodes réunis dans votre compte.')+`<section class="panel"><h2>Votre bibliothèque</h2><p>Importez une chaîne, une playlist ou une émission recherchée par son nom. Choisissez les vidéos et leur statut vu ou non vu avant de confirmer. Toutes les émissions importées sont suivies automatiquement.</p><h2>À voir</h2><p>À chaque ouverture de cet onglet, les sources sont interrogées pour rechercher des publications plus récentes que votre import. Les nouvelles sorties apparaissent séparément des autres épisodes non vus. Les vidéos retirées ne sont pas réimportées automatiquement.</p><h2>Recherche d’une émission</h2><p>Les pages de 50 publications sont parcourues automatiquement. La recherche s’arrête après cinq pages consécutives sans correspondance ; vous pouvez continuer manuellement. Les appels sont espacés pour respecter les limites du Worker.</p><h2>Lecture YouTube</h2><p>Ouvrir un épisode charge immédiatement le lecteur YouTube. Certaines restrictions d’âge, de pays ou d’intégration peuvent empêcher la lecture ici ; le lien YouTube reste disponible. Le statut vu se gère avec l’icône de validation.</p></section>`;
+  return heading('youtube-favs','Votre bibliothèque YouTube','Chaînes, émissions et épisodes réunis dans votre compte.')+`<section class="panel"><h2>Votre bibliothèque</h2><p>Importez une chaîne, une playlist ou une émission recherchée par son nom. Choisissez les vidéos et leur statut vu ou non vu avant de confirmer. Toutes les émissions importées sont suivies automatiquement.</p><h2>À voir</h2><p>Pendant que le site est actif, les sources sont interrogées automatiquement à intervalle adapté à la bibliothèque (au moins 15 minutes) pour rechercher des publications plus récentes que votre import. Les nouvelles sorties apparaissent séparément des autres épisodes non vus. Les vidéos retirées ne sont pas réimportées automatiquement.</p><h2>Recherche d’une émission</h2><p>Les pages de 50 publications sont parcourues automatiquement. La recherche s’arrête après cinq pages consécutives sans correspondance ; vous pouvez continuer manuellement. Les appels sont espacés pour respecter les limites du Worker.</p><h2>Lecture YouTube</h2><p>Ouvrir un épisode charge immédiatement le lecteur YouTube. Certaines restrictions d’âge, de pays ou d’intégration peuvent empêcher la lecture ici ; le lien YouTube reste disponible. Le statut vu se gère avec l’icône de validation.</p></section>`;
 }
-let newsVisit=false;
+function startReleaseRefresh(){
+  if(releaseRefresh){releaseRefresh.poke();return;}
+  const uid=cloudStatus.user?.uid;if(!uid)return;
+  const key=`youtube-favs:refresh-timing:${uid}`;
+  releaseRefresh=globalThis.YouTubeFavsRefresh.create({
+    run:options=>checkNewReleases(options),
+    ready:()=>canEdit()&&cloudStatus.user?.uid===uid&&state.shows.length>0&&!pendingSaves&&!newsState.busy&&![...youtubeImports.values()].some(progress=>progress.busy||progress.committing),
+    visible:()=>document.visibilityState!=='hidden'&&globalThis.navigator?.onLine!==false,
+    read:()=>{try{return JSON.parse(localStorage.getItem(key)||'null');}catch{return null;}},
+    write:value=>{try{localStorage.setItem(key,JSON.stringify(value));}catch{}},
+    lock:task=>globalThis.navigator?.locks?.request?globalThis.navigator.locks.request(`youtube-favs-refresh:${uid}`,{ifAvailable:true},lock=>lock?task():undefined):task(),
+  });
+  releaseRefresh.start();
+}
+
 function render(){
   accountChrome();if(cloudStatus.phase!=='ready'){app.innerHTML=authPage();return;}
   const current=route(),key=`${current.page}/${current.id||''}/${current.channelId}/${current.showId}`;
@@ -529,8 +548,6 @@ function render(){
   else if(current.page==='settings')app.innerHTML=settingsPage();
   else app.innerHTML=aboutPage();
   updateResults();applyPreferences();
-  if(current.page!=='watchlist')newsVisit=false;
-  else if(!newsVisit){newsVisit=true;Promise.resolve().then(()=>checkNewReleases());}
 }
 function openModal(content,player=false) {
   clearTimeout(importCloseTimer);modalVersion++;modal.classList.remove('import-dialog');
@@ -663,7 +680,7 @@ function videoForm(showId) {
 }
 function playEpisode(id){
   const episode=visibleEpisodes().find(item=>item.id===id);if(!episode)return;
-  openModal(modalHeading(escapeHtml(episode.title))+`<iframe class="player" src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1" title="${escapeHtml(episode.title)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><div class="player-actions"><a class="link-button" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener noreferrer">Ouvrir sur YouTube ↗</a>${watchedButton(episode,true)}</div>`,true);
+  openModal(modalHeading(escapeHtml(episode.title))+`<iframe class="player" src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&controls=1&playsinline=1&fs=1&rel=0" title="${escapeHtml(episode.title)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><div class="player-actions"><a class="link-button" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener noreferrer">Ouvrir sur YouTube ↗</a>${watchedButton(episode,true)}</div>`,true);
 }
 function toggle(key,id){
   if(!canEdit()||key!=='watched')return;
@@ -688,7 +705,7 @@ document.addEventListener('click',async event=>{
   if(data.action==='sign-out'){if(globalThis.youtubeFavsCloud)await globalThis.youtubeFavsCloud.signOut();return;}
   if(data.action==='retry-cloud'){if(globalThis.youtubeFavsCloud)globalThis.youtubeFavsCloud.retry();else location.reload();return;}
   if(!canEdit())return;
-  if(data.action==='check-releases')return checkNewReleases();
+  if(data.action==='check-releases')return releaseRefresh?.checkNow();
   if(data.action==='stop-scan'){const progress=youtubeImports.get(activeImportId);if(progress)progress.stop=true;return;}
   if(data.importWatched){const progress=youtubeImports.get(activeImportId);if(!progress||progress.committing||progress.success)return;if(progress.watched.has(data.importWatched))progress.watched.delete(data.importWatched);else progress.watched.add(data.importWatched);renderImportPreview(activeImportId);return;}
   if(data.removeVideo)return requestRemoval(data.removeVideo);
@@ -732,7 +749,7 @@ document.addEventListener('click',async event=>{
   if(data.action==='theme'){state.theme=state.theme==='dark'?'light':'dark';save();render();return;}
   if(data.action==='clear-filters'){filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};render();return;}
   if(data.action==='reset')return openModal(modalHeading('Réinitialiser ma bibliothèque ?')+'<p>Toutes vos émissions, vidéos et informations de visionnage seront retirées de ce compte.</p><div class="form-footer"><button data-close>Annuler</button><button class="primary" data-action="confirm-reset">Réinitialiser</button></div>');
-  if(data.action==='confirm-reset'){youtubeGeneration++;youtubeMetadata.clear();youtubeImports.clear();youtubeRequested.clear();newsState={busy:false,message:'',errors:[]};newsVisit=false;state=initialState();save();closeModal();render();toast('Bibliothèque réinitialisée.');}
+  if(data.action==='confirm-reset'){youtubeGeneration++;youtubeMetadata.clear();youtubeImports.clear();youtubeRequested.clear();newsState={busy:false,message:'',errors:[]};state=initialState();save();closeModal();render();toast('Bibliothèque réinitialisée.');}
 });
 document.addEventListener('input',event=>{
   if(event.target.id==='categoryEntry')renderCategoryEditor();
@@ -801,7 +818,7 @@ document.addEventListener('submit',async event=>{
     try{
       const result=await globalThis.youtubeFavsCloud.configureWorker(values.get('origin'));
       if(generation!==youtubeGeneration||!canEdit())return;
-      youtubeGeneration++;youtubeImports.clear();youtubeRequested.clear();youtubeMessage='';newsState={busy:false,message:'',errors:[]};newsVisit=false;
+      youtubeGeneration++;youtubeImports.clear();youtubeRequested.clear();youtubeMessage='';newsState={busy:false,message:'',errors:[]};
       workerMessage=result.persisted?'Worker connecté. L’URL est enregistrée dans ce navigateur.':'Worker connecté pour cette session. Le navigateur bloque la mémorisation de l’URL.';
       render();reloadYoutubeMetadata();
     }catch(error){if(generation===youtubeGeneration){workerMessage=error.message;document.querySelector('#workerStatus').textContent=workerMessage;}}
@@ -866,23 +883,28 @@ function armLoadingTimeout() {
   },25000);
 }
 window.addEventListener('youtube-favs:auth',event=>{
+  cloudEpoch++;releaseRefresh?.stop();releaseRefresh=null;pendingSaves=0;pendingCloudData=null;
   globalThis.YouTubeFavsDOM.clearFeedback();closeModal();
-  youtubeGeneration++;youtubeMetadata.clear();youtubeImports.clear();youtubeRequested.clear();youtubeMessage='';newsState={busy:false,message:'',errors:[]};newsVisit=false;
+  youtubeGeneration++;youtubeMetadata.clear();youtubeImports.clear();youtubeRequested.clear();youtubeMessage='';newsState={busy:false,message:'',errors:[]};
   state=initialState();lastSaved=privateModel.empty();
   cloudStatus={phase:event.detail.status,user:event.detail.user,message:event.detail.message||'',sync:'ready'};
   filter={query:'',category:'all',status:'all',sort:'newest',show:'all'};lastRoute='';
   loadShortVideosPreference();applyPreferences();render();armLoadingTimeout();
 });
-window.addEventListener('youtube-favs:data',event=>{
-  if(event.detail.uid!==cloudStatus.user?.uid)return;
-  state=privateModel.hydrate(event.detail.data,catalogue);
+function receiveCloudData(detail){
+  if(detail.uid!==cloudStatus.user?.uid)return;
+  state=privateModel.hydrate(detail.data,catalogue);
   applyYoutubeMetadata();
   lastSaved=privateModel.pack(state,catalogue);
   cloudStatus.phase='ready';cloudStatus.message='';
   clearTimeout(loadingTimer);applyPreferences();render();
   if(activeImportId)renderImportPreview(activeImportId);
-  reloadYoutubeMetadata();
-});
+  reloadYoutubeMetadata();startReleaseRefresh();
+}
+window.addEventListener('youtube-favs:data',event=>{if(event.detail.uid!==cloudStatus.user?.uid)return;if(pendingSaves){pendingCloudData=event.detail;return;}receiveCloudData(event.detail);});
+window.addEventListener('beforeunload',event=>{if(pendingSaves){event.preventDefault();event.returnValue='';}});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')releaseRefresh?.poke();});
+window.addEventListener('online',()=>releaseRefresh?.poke());
 window.addEventListener('youtube-favs:sync',event=>{
   if(event.detail.uid!==cloudStatus.user?.uid)return;
   cloudStatus.sync=event.detail.status;
@@ -891,5 +913,5 @@ window.addEventListener('youtube-favs:sync',event=>{
 });
 window.addEventListener('youtube-favs:login-error',event=>{cloudStatus.message=event.detail.message;render();});
 armLoadingTimeout();
-if(!location.hash)history.replaceState(null,'','#/shows');
+if(!location.hash)history.replaceState(null,'','#/watchlist');
 render();

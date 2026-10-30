@@ -1,9 +1,11 @@
 'use strict';
+const assert=require('node:assert/strict');
+require('../cloud-state.js');
 const {test,before,after,beforeEach}=require('node:test');
 const fs=require('node:fs');
 const path=require('node:path');
 const {initializeTestEnvironment,assertSucceeds,assertFails}=require('@firebase/rules-unit-testing');
-const {doc,setDoc,getDoc,updateDoc,deleteDoc,collection,getDocs,serverTimestamp,runTransaction}=require('firebase/firestore');
+const {doc,setDoc,getDoc,getDocFromServer,updateDoc,deleteDoc,collection,getDocs,serverTimestamp,runTransaction}=require('firebase/firestore');
 let environment;
 const state=(overrides={})=>({schemaVersion:1,following:[],favorites:[],watched:[],queue:[],shows:[],episodes:[],view:'grid',accent:'#f15a61',theme:'dark',revision:0,updatedAt:serverTimestamp(),...overrides});
 const reference=(database,uid='alice')=>doc(database,'users',uid,'app','state');
@@ -55,4 +57,23 @@ test('the existing rules accept private library source watermarks and episode no
  await assertSucceeds(setDoc(reference(db),state({following:['program'],shows:[{id:'program',name:'Programme',channel:'Channel',mode:'keywords',source:'https://www.youtube.com/@example',keywords:'show',releaseAfter:'2026-10-21T00:00:00.000Z',cover:'AAAAAAAAAAA'}],episodes:[{id:'AAAAAAAAAAA',showId:'program',title:'Vidéo YouTube',apiImported:true,newRelease:true,added:1}]})));
  await assertSucceeds(getDoc(reference(db)));
  const bob=environment.authenticatedContext('bob').firestore();await assertFails(getDoc(reference(bob)));
+});
+
+test('rapid watched edits are committed to Firestore and are present in a fresh device read',async()=>{
+ const model=globalThis.YouTubeFavsState,db=environment.authenticatedContext('alice').firestore();let transactions=0;
+ const session=model.createSession({
+  async transact(update){
+   transactions++;
+   return runTransaction(db,async transaction=>{
+    const snapshot=await transaction.get(reference(db));
+    const data=update(snapshot.exists()?snapshot.data():model.empty()),revision=snapshot.exists()?snapshot.data().revision+1:0;
+    transaction.set(reference(db),{...data,revision,updatedAt:serverTimestamp()});return {data,revision};
+   });
+  },onData(){},onStatus(){},
+ });
+ const first={...model.empty(),watched:['AAAAAAAAAAA']},second={...first,watched:['AAAAAAAAAAA','BBBBBBBBBBB']};
+ await Promise.all([session.save(model.empty(),first),session.save(first,second)]);session.stop();
+ assert.equal(transactions,1);
+ const fresh=environment.authenticatedContext('alice',{device:'reloaded'}).firestore();
+ const snapshot=await getDocFromServer(reference(fresh));assert.deepEqual(snapshot.data().watched,['AAAAAAAAAAA','BBBBBBBBBBB']);
 });

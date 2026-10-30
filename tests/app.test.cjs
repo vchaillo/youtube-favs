@@ -21,7 +21,7 @@ function boot({legacy=null,privateData={},authenticated=true}={}) {
     FormData:class{constructor(form){this.values=form.values;}get(key){return this.values?.[key]??'';}},
     youtubeFavsCloud:{save:(previous,next)=>{writes.push({previous:structuredClone(previous),next:structuredClone(next)});return Promise.resolve();},signIn(){},signOut(){},retry(){}}
   });
-  for(const file of ['data/catalog.js','cloud-state.js','library.js','dom-sync.js','app.js'])vm.runInContext(load(file),context);
+  for(const file of ['data/catalog.js','cloud-state.js','library.js','dom-sync.js','refresh.js','app.js'])vm.runInContext(load(file),context);
   const emit=(name,detail)=>windowListeners[`youtube-favs:${name}`]({detail});
   const run=code=>vm.runInContext(code,context);
   const user={uid:'alice',displayName:'Alice',email:'alice@example.test',photoURL:''};
@@ -114,18 +114,20 @@ test('watchlist checks sources and separates new releases from the unseen backlo
   assert.equal(app.run("state.episodes.some(e=>e.id==='BBBBBBBBBBB'&&e.newRelease)"),true);
   assert.equal(app.run("state.episodes.some(e=>e.id==='DDDDDDDDDDD')"),false);
   assert.equal(app.run("visibleEpisodes().some(e=>e.id==='CCCCCCCCCCC')"),false);
-  app.run("newsVisit=true;location.hash='#/watchlist';render()");
+  app.run("location.hash='#/watchlist';render()");
   assert.match(app.nodes.get('#results').innerHTML,/Nouvelles sorties/);assert.match(app.nodes.get('#results').innerHTML,/Épisodes non vus/);
   app.run("toggle('watched','BBBBBBBBBBB')");assert.equal(app.run("state.episodes.find(e=>e.id==='BBBBBBBBBBB').newRelease"),false);
   assert.equal(app.run("filteredEpisodes().some(e=>e.id==='BBBBBBBBBBB')"),false);
   assert.equal(app.run('calls[0].refresh'),true);
 });
-test('entering watchlist triggers a new check on each visit without a render loop',async()=>{
+test('automatic refresh is independent of route visits and manual refresh remains available',async()=>{
   const app=boot({privateData:{shows:[show({mode:'channel',keywords:''})]}});
   app.run("globalThis.calls=0;globalThis.youtubeFavsCloud.youtube=async()=>{calls++;return {episodes:[],scanned:0,nextPageToken:null};};location.hash='#/watchlist';render()");
   for(let i=0;i<20;i++)await Promise.resolve();
-  assert.equal(app.run('calls'),1);app.run("render();location.hash='#/shows';render();location.hash='#/watchlist';render()");
-  for(let i=0;i<20;i++)await Promise.resolve();assert.equal(app.run('calls'),2);
+  assert.equal(app.run('calls'),0);assert.equal(app.run('Boolean(releaseRefresh)'),true);
+  await app.click({action:'check-releases'});assert.equal(app.run('calls'),1);
+  app.run("location.hash='#/shows';render();location.hash='#/watchlist';render()");
+  for(let i=0;i<20;i++)await Promise.resolve();assert.equal(app.run('calls'),1);
 });
 test('source failures are explicit and preserve existing unwatched episodes',async()=>{
   const app=boot({privateData:{shows:[show()],episodes:[video()]}});

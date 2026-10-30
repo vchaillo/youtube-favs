@@ -95,35 +95,51 @@ globalThis.YouTubeFavsState = (() => {
   function cancellation() {return Object.assign(new Error('Session changed.'),{code:'session-changed'});}
   // Capture the account's document outside this queue. Never retarget pending work after account changes.
   function createSession({transact,onData,onStatus}) {
-    let active=true,failed=false,pending=0,tail=Promise.resolve(),latest=empty(),revision=-1;
-    function receive(value,version=-1) {
+    let active=true,failed=false,working=false,latest=empty(),revision=-1;
+    const queued=[];
+    function receive(value,version=-1){
       if(!active||version<revision)return;
       latest=sanitize(value);revision=version;
-      if(!pending&&!failed)onData(structuredClone(latest));
+      if(!working&&!queued.length&&!failed)onData(structuredClone(latest));
     }
-    function save(previous,next) {
-      const patch=diff(previous,next);
+    async function flush(){
+      if(working||!active||failed)return;
+      working=true;
+      try{
+        while(queued.length&&active&&!failed){
+          // Rapid clicks share one transaction instead of waiting for one round trip per episode.
+          const batch=queued.splice(0);
+          try{
+            const saved=await transact(remote=>{
+              if(!active||failed)throw cancellation();
+              const payload=batch.reduce((value,entry)=>applyPatch(value,entry.patch),remote);
+              if(JSON.stringify(payload).length>240000)throw Object.assign(new Error('Personal library is too large.'),{code:'library-too-large'});
+              return payload;
+            });
+            if(!active)throw cancellation();
+            receive(saved.data,saved.revision);
+            for(const entry of batch)entry.resolve();
+          }catch(error){
+            failed=true;
+            for(const entry of [...batch,...queued.splice(0)])entry.reject(error);
+            if(active)onStatus('error',error);
+          }
+        }
+      }finally{
+        working=false;
+        if(active&&!failed&&!queued.length){onData(structuredClone(latest));onStatus('ready');}
+      }
+    }
+    function save(previous,next){
       if(!active||failed)return Promise.reject(cancellation());
+      const patch=diff(previous,next);
       if(!hasChanges(patch))return Promise.resolve();
-      pending++;onStatus('saving');
-      const operation=tail.then(async()=>{
-        if(!active||failed)throw cancellation();
-        const saved=await transact(remote=>{
-          if(!active||failed)throw cancellation();
-          const payload=applyPatch(remote,patch);
-          if(JSON.stringify(payload).length>240000)throw Object.assign(new Error('Personal library is too large.'),{code:'library-too-large'});
-          return payload;
-        });
-        if(!active)throw cancellation();
-        receive(saved.data,saved.revision);
-      });
-      tail=operation.catch(error=>{if(active){failed=true;onStatus('error',error);}});
-      return operation.finally(()=>{
-        pending--;
-        if(active&&!pending&&!failed){onData(structuredClone(latest));onStatus('ready');}
-      });
+      const operation=new Promise((resolve,reject)=>queued.push({patch,resolve,reject}));
+      onStatus('saving');Promise.resolve().then(flush);
+      return operation;
     }
-    return {receive,save,stop(){active=false;latest=empty();},isActive:()=>active};
+    return {receive,save,stop(){active=false;for(const entry of queued.splice(0))entry.reject(cancellation());latest=empty();},isActive:()=>active};
   }
+
   return {empty,sanitize,pack,hydrate,diff,applyPatch,createSession,cleanCoverUrl,categoriesOf};
 })();
